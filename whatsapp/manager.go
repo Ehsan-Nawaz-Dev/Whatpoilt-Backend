@@ -1,4 +1,4 @@
-﻿package whatsapp
+package whatsapp
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"github.com/whatpilot/backend/models"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
+	waStore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -59,7 +60,8 @@ var optOutKeywords = regexp.MustCompile(`(?i)^(stop|unsubscribe|opt.?out|no|canc
 
 func NewManager(sessionsDBPath string) (*Manager, error) {
 	dbLog := waLog.Stdout("WA-DB", "ERROR", true)
-	container, err := sqlstore.New("sqlite3",
+	// context.Background() required by newer whatsmeow
+	container, err := sqlstore.New(context.Background(), "sqlite3",
 		fmt.Sprintf("file:%s?_foreign_keys=on", sessionsDBPath), dbLog)
 	if err != nil {
 		return nil, fmt.Errorf("open sessions db: %w", err)
@@ -111,7 +113,7 @@ func (m *Manager) broadcast(evt QREvent) {
 
 // ConnectExisting connects an already-paired device without showing a QR code.
 func (m *Manager) ConnectExisting() error {
-	deviceStore, err := m.container.GetFirstDevice()
+	deviceStore, err := m.container.GetFirstDevice(context.Background())
 	if err != nil || deviceStore.ID == nil {
 		return fmt.Errorf("no paired device")
 	}
@@ -137,7 +139,7 @@ func (m *Manager) StartPairing(ctx context.Context) {
 	}
 	defer m.pairingMu.Unlock()
 
-	deviceStore, err := m.container.GetFirstDevice()
+	deviceStore, err := m.container.GetFirstDevice(ctx)
 	if err != nil {
 		m.broadcast(QREvent{Event: "error", Message: err.Error()})
 		return
@@ -197,7 +199,7 @@ func (m *Manager) Logout() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.client != nil {
-		if err := m.client.Logout(); err != nil {
+		if err := m.client.Logout(context.Background()); err != nil {
 			return err
 		}
 		m.client.Disconnect()
@@ -208,8 +210,6 @@ func (m *Manager) Logout() error {
 }
 
 // SendPollMessage sends a WhatsApp native poll.
-// question is shown as the poll title; options are the vote choices (max 12, min 2).
-// The recipient can vote directly inside WhatsApp without leaving the chat.
 func (m *Manager) SendPollMessage(phone, question string, options []string) error {
 	phone, err := ValidatePhone(phone)
 	if err != nil {
@@ -248,53 +248,30 @@ func (m *Manager) SendPollMessage(phone, question string, options []string) erro
 	return err
 }
 
-// SendButtonMessage sends a WhatsApp message with quick-reply buttons (max 3).
-// body is the message text displayed above the buttons.
+// SendButtonMessage sends a message with button labels formatted as a numbered list.
+// The ButtonsMessage proto was removed in newer whatsmeow versions, so we fall
+// back to plain text with numbered choices — WhatsApp still delivers it perfectly.
 func (m *Manager) SendButtonMessage(phone, body string, buttons []string) error {
 	phone, err := ValidatePhone(phone)
 	if err != nil {
 		return err
 	}
-	m.mu.RLock()
-	client, status := m.client, m.status
-	m.mu.RUnlock()
-	if client == nil || status != StatusConnected {
-		return fmt.Errorf("whatsapp not connected (status: %s)", status)
-	}
-	if len(buttons) == 0 {
-		return m.SendTextMessage(phone, body) // fallback to plain text
-	}
-	if len(buttons) > 3 {
-		buttons = buttons[:3] // WhatsApp enforces max 3
-	}
-
-	waButtons := make([]*waProto.Button, len(buttons))
-	for i, label := range buttons {
-		label := label
-		waButtons[i] = &waProto.Button{
-			ButtonId: proto.String(fmt.Sprintf("btn_%d", i+1)),
-			ButtonText: &waProto.Button_ButtonText{
-				DisplayText: proto.String(label),
-			},
-			Type: waProto.Button_RESPONSE.Enum(),
+	if len(buttons) > 0 {
+		if len(buttons) > 3 {
+			buttons = buttons[:3]
 		}
+		var sb strings.Builder
+		sb.WriteString(body)
+		sb.WriteString("\n")
+		for i, btn := range buttons {
+			sb.WriteString(fmt.Sprintf("\n%d. %s", i+1, btn))
+		}
+		body = sb.String()
 	}
-
-	jid := types.NewJID(phone, types.DefaultUserServer)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, err = client.SendMessage(ctx, jid, &waProto.Message{
-		ButtonsMessage: &waProto.ButtonsMessage{
-			ContentText: proto.String(body),
-			Buttons:     waButtons,
-			HeaderType:  waProto.ButtonsMessage_EMPTY.Enum(),
-		},
-	})
-	return err
+	return m.SendTextMessage(phone, body)
 }
 
-// SendTextMessage sends a plain-text message (no typing simulation).
+// SendTextMessage sends a plain-text message.
 func (m *Manager) SendTextMessage(phone, text string) error {
 	phone, err := ValidatePhone(phone)
 	if err != nil {
@@ -314,7 +291,6 @@ func (m *Manager) SendTextMessage(phone, text string) error {
 }
 
 // SendInteractiveMessage dispatches to the correct sender based on msgType.
-// Typing simulation applies only to text messages.
 func (m *Manager) SendInteractiveMessage(phone, content string,
 	msgType models.MessageType, options []string, cfg models.Settings) error {
 
@@ -348,7 +324,7 @@ func (m *Manager) SendMessageWithTyping(phone, text string, cfg models.Settings)
 	jid := types.NewJID(phone, types.DefaultUserServer)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	_ = client.SendPresence(types.PresenceAvailable)
+	_ = client.SendPresence(context.Background(), types.PresenceAvailable)
 
 	// Read delay
 	if cfg.ReadDelayMaxSeconds > cfg.ReadDelayMinSeconds {
@@ -356,9 +332,9 @@ func (m *Manager) SendMessageWithTyping(phone, text string, cfg models.Settings)
 		time.Sleep(time.Duration(readSec) * time.Second)
 	}
 
-	_ = client.SendChatPresence(jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	_ = client.SendChatPresence(context.Background(), jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
 	time.Sleep(typingDuration(text, cfg, r))
-	_ = client.SendChatPresence(jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	_ = client.SendChatPresence(context.Background(), jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 	time.Sleep(time.Duration(200+r.Intn(400)) * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -390,9 +366,9 @@ func typingDuration(text string, cfg models.Settings, r *rand.Rand) time.Duratio
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func (m *Manager) buildClient(deviceStore interface{}) *whatsmeow.Client {
+func (m *Manager) buildClient(deviceStore *waStore.Device) *whatsmeow.Client {
 	clientLog := waLog.Stdout("WA-Client", "ERROR", true)
-	client := whatsmeow.NewClient(deviceStore.(*sqlstore.DeviceContainer).GetFirstDevice, clientLog)
+	client := whatsmeow.NewClient(deviceStore, clientLog)
 	client.AddEventHandler(m.handleEvent)
 	return client
 }
@@ -404,14 +380,12 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 
 	case *events.Disconnected:
 		m.setStatus(StatusDisconnected)
-		// Auto-reconnect with backoff (up to 5 attempts)
 		go m.reconnect()
 
 	case *events.LoggedOut:
 		m.setStatus(StatusLoggedOut)
 
 	case *events.Message:
-		// Handle opt-out keywords from customers
 		text := strings.TrimSpace(v.Message.GetConversation())
 		if optOutKeywords.MatchString(text) && m.onOptOut != nil {
 			phone := v.Info.Sender.User
@@ -427,7 +401,7 @@ func (m *Manager) reconnect() {
 		time.Sleep(backoff)
 		backoff *= 2
 		if m.GetStatus() == StatusConnected {
-			return // already back
+			return
 		}
 		slog.Info("whatsapp reconnect attempt", "attempt", attempt)
 		if err := m.ConnectExisting(); err == nil {
@@ -445,7 +419,6 @@ func (m *Manager) setStatus(s Status) {
 }
 
 // ValidatePhone sanitizes and validates a phone number.
-// Returns the sanitized E.164 number (without +) or an error.
 var phoneRE = regexp.MustCompile(`^\d{7,15}$`)
 
 func ValidatePhone(phone string) (string, error) {
