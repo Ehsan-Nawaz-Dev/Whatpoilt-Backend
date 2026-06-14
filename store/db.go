@@ -383,24 +383,33 @@ func (db *DB) UpdateAutomationTemplate(id, shop, templateID string) error {
 	return err
 }
 
-// defaultAutomationDefs are the 9 built-in automations seeded for every shop.
+// defaultAutomationDefs are the 18 built-in automations seeded for every shop.
 var defaultAutomationDefs = []struct {
 	Name         string
 	TriggerType  models.TriggerType
 	TemplateName string
 }{
-	// Order created (2)
+	// Order Created (5)
 	{"Customer Order Confirmation", models.TriggerOrderCreated,   "Order Confirmation"},
+	{"Order Processing Update",     models.TriggerOrderCreated,   "Order Processing"},
+	{"Quick Order Thanks",          models.TriggerOrderCreated,   "Quick Order Thanks"},
+	{"Post-Confirmation Reply",     models.TriggerOrderCreated,   "Post-Confirmation Reply"},
 	{"Admin New Order Alert",       models.TriggerOrderCreated,   "Admin Order Alert"},
-	// Order fulfilled / shipped (3)
+	// Order Fulfilled (5)
 	{"Shipping Notification",       models.TriggerOrderFulfilled, "Shipping Alert"},
+	{"Shipping Confirmation",       models.TriggerOrderFulfilled, "Shipping Confirmation"},
 	{"Delivery Confirmation",       models.TriggerOrderFulfilled, "Delivery Alert"},
 	{"Post-Purchase Review",        models.TriggerOrderFulfilled, "Post-Purchase Review"},
-	// Order cancelled (2)
-	{"Cancellation Notice",         models.TriggerOrderCancelled, "Order Cancellation"},
+	{"Admin Order Confirmed Alert", models.TriggerOrderFulfilled, "Admin Order Confirmed Alert"},
+	// Order Cancelled (5)
 	{"Cancellation Verification",   models.TriggerOrderCancelled, "Cancellation Verification"},
-	// Abandoned cart (2)
+	{"Cancellation Notice",         models.TriggerOrderCancelled, "Order Cancellation"},
+	{"Refund Initiated",            models.TriggerOrderCancelled, "Refund Initiated"},
+	{"Win-Back Offer",              models.TriggerOrderCancelled, "Win-Back Offer"},
+	{"Admin Cancellation Alert",    models.TriggerOrderCancelled, "Admin Cancellation Alert"},
+	// Abandoned Cart (3)
 	{"Abandoned Cart Recovery",     models.TriggerAbandonedCart,  "Abandoned Cart Recovery"},
+	{"Cart Save Reminder",          models.TriggerAbandonedCart,  "Cart Save Reminder"},
 	{"Cart Discount Offer",         models.TriggerAbandonedCart,  "Cart Discount Offer"},
 }
 
@@ -431,13 +440,13 @@ func (db *DB) SeedAutomations(shop string) error {
 	return nil
 }
 
-// DefaultAutomationsSeeded returns true when the shop has at least 9 automation rows.
+// DefaultAutomationsSeeded returns true when the shop has all 18 automation rows.
 func (db *DB) DefaultAutomationsSeeded(shop string) bool {
 	var count int
 	db.conn.QueryRow(
 		`SELECT COUNT(*) FROM automations WHERE shop_domain=?`, shop,
 	).Scan(&count)
-	return count >= 9
+	return count >= 18
 }
 
 // ─── Contacts ────────────────────────────────────────────────────────────────
