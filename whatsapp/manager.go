@@ -144,6 +144,21 @@ func (m *Manager) StartPairing(ctx context.Context) {
 		m.broadcast(QREvent{Event: "error", Message: err.Error()})
 		return
 	}
+
+	// whatsmeow's GetQRChannel requires an unpaired device (no stored JID).
+	// If the user previously disconnected without a full logout the old JID
+	// stays in the store — delete it so a fresh QR pairing can begin.
+	if deviceStore.ID != nil {
+		if delErr := deviceStore.Delete(ctx); delErr != nil {
+			slog.Warn("could not clear old WA session before re-pairing", "err", delErr)
+		}
+		deviceStore, err = m.container.GetFirstDevice(ctx)
+		if err != nil {
+			m.broadcast(QREvent{Event: "error", Message: err.Error()})
+			return
+		}
+	}
+
 	client := m.buildClient(deviceStore)
 	m.mu.Lock()
 	m.client = client
