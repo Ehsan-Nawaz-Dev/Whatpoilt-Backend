@@ -259,6 +259,12 @@ type AnalyticsData struct {
 	ByTrigger []TriggerStats `json:"by_trigger"`
 }
 
+// AdminProfile is the operator's display name and avatar shown in the admin panel.
+type AdminProfile struct {
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatar_url"`
+}
+
 // ServerStatusData is the payload for GET /admin/server-status.
 type ServerStatusData struct {
 	Uptime        string  `json:"uptime"`

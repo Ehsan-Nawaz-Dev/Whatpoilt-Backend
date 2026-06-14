@@ -147,10 +147,13 @@ func main() {
 
 	// ── Admin routes (protected by ADMIN_API_KEY) ─────────────────────────────
 	adm := r.Group("/admin")
-	adm.Use(handlers.AdminAuth(config.App.AdminAPIKey))
+	adm.Use(handlers.AdminAuth(db, config.App.AdminAPIKey))
 	{
 		adm.GET("/stats",                    admH.GlobalStats)
 		adm.GET("/server-status",            admH.ServerStatus)
+		adm.GET("/profile",                  admH.GetProfile)
+		adm.PUT("/profile",                  admH.UpdateProfile)
+		adm.POST("/change-password",         admH.ChangePassword)
 		adm.GET("/shops",                    admH.ListShops)
 		adm.DELETE("/shops/:shop",           admH.PurgeShop)
 		adm.GET("/plans",                    admH.ListPlans)

@@ -86,6 +86,11 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 
+		// ── admin config (key-value store for profile + overrideable key) ───
+		`CREATE TABLE IF NOT EXISTS admin_config (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT '')`,
+
 		// ── admin tables ─────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS admin_plans (
 			plan_key TEXT PRIMARY KEY,

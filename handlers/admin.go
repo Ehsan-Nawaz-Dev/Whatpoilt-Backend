@@ -29,10 +29,16 @@ func NewAdminHandler(db *store.DB, registry *whatsapp.Registry, dbPath string) *
 	return h
 }
 
-// AdminAuth returns a middleware that requires Authorization: Bearer <ADMIN_API_KEY>.
-func AdminAuth(key string) gin.HandlerFunc {
+// AdminAuth returns a middleware that requires Authorization: Bearer <key>.
+// It checks the DB-stored key first (set via /admin/change-password),
+// falling back to the env-var key passed at startup.
+func AdminAuth(db *store.DB, envKey string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if key != "" && c.GetHeader("Authorization") != "Bearer "+key {
+		active := db.GetAdminKey()
+		if active == "" {
+			active = envKey
+		}
+		if active != "" && c.GetHeader("Authorization") != "Bearer "+active {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
@@ -215,6 +221,58 @@ func (h *AdminHandler) DeleteAnnouncement(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})
+}
+
+// ─── Profile ──────────────────────────────────────────────────────────────────
+
+// GET /admin/profile
+func (h *AdminHandler) GetProfile(c *gin.Context) {
+	c.JSON(200, models.AdminProfile{
+		Name:      h.db.GetAdminConfigValue("profile_name"),
+		AvatarURL: h.db.GetAdminConfigValue("profile_avatar"),
+	})
+}
+
+// PUT /admin/profile
+func (h *AdminHandler) UpdateProfile(c *gin.Context) {
+	var req models.AdminProfile
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	h.db.SetAdminConfigValue("profile_name", req.Name)
+	h.db.SetAdminConfigValue("profile_avatar", req.AvatarURL)
+	c.JSON(200, req)
+}
+
+// POST /admin/change-password
+func (h *AdminHandler) ChangePassword(c *gin.Context) {
+	var req struct {
+		CurrentKey string `json:"current_key" binding:"required"`
+		NewKey     string `json:"new_key"     binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	// Resolve the currently active key (DB overrides env).
+	active := h.db.GetAdminKey()
+	if active == "" {
+		active = config.App.AdminAPIKey
+	}
+	if req.CurrentKey != active {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "current key is incorrect"})
+		return
+	}
+	if len(req.NewKey) < 8 {
+		c.JSON(400, gin.H{"error": "new key must be at least 8 characters"})
+		return
+	}
+	if err := h.db.SetAdminKey(req.NewKey); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "message": "Key updated. Use the new key on your next login."})
 }
 
 // ─── Server Status ────────────────────────────────────────────────────────────

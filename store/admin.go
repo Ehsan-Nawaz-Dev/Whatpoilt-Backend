@@ -8,6 +8,31 @@ import (
 	"github.com/whatpilot/backend/models"
 )
 
+// ─── Admin: Config (key-value store) ─────────────────────────────────────────
+
+func (db *DB) GetAdminConfigValue(key string) string {
+	var v string
+	db.conn.QueryRow(`SELECT value FROM admin_config WHERE key=?`, key).Scan(&v)
+	return v
+}
+
+func (db *DB) SetAdminConfigValue(key, value string) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO admin_config(key,value) VALUES(?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
+}
+
+// GetAdminKey returns the key stored in DB, or "" if not overridden yet.
+func (db *DB) GetAdminKey() string {
+	return db.GetAdminConfigValue("admin_key")
+}
+
+// SetAdminKey persists a new admin key to the DB (overrides the env var).
+func (db *DB) SetAdminKey(key string) error {
+	return db.SetAdminConfigValue("admin_key", key)
+}
+
 // ─── Admin: Job Stats ────────────────────────────────────────────────────────
 
 // GetJobStats returns the count of pending and failed jobs across all shops.
