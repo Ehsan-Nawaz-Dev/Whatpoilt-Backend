@@ -78,12 +78,12 @@ func (h *SessionHandler) ByShop(c *gin.Context) {
 	// Return as JSON array of raw session objects.
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(http.StatusOK)
-	c.Writer.WriteByte('[')
+	c.Writer.WriteString("[")
 	for i, s := range sessions {
 		if i > 0 {
-			c.Writer.WriteByte(',')
+			c.Writer.WriteString(",")
 		}
 		c.Writer.WriteString(s)
 	}
-	c.Writer.WriteByte(']')
+	c.Writer.WriteString("]")
 }
