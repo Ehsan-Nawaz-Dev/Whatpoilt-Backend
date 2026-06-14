@@ -1,0 +1,7 @@
+.env
+data/
+shopify-whatsapp-backend
+whatpilot
+*.exe
+.DS_Store
+Thumbs.db

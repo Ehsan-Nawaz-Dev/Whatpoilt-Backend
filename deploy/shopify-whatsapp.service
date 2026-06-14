@@ -1,0 +1,15 @@
+[Unit]
+Description=Shopify WhatsApp Backend
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/shopify-whatsapp-backend
+ExecStart=/opt/shopify-whatsapp-backend/shopify-whatsapp-backend
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/shopify-whatsapp-backend/.env
+
+[Install]
+WantedBy=multi-user.target

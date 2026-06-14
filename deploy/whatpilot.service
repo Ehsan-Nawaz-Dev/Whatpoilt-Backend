@@ -1,0 +1,15 @@
+[Unit]
+Description=WhatPilot – WhatsApp Automation Backend
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/whatpilot-backend
+ExecStart=/opt/whatpilot-backend/whatpilot
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/whatpilot-backend/.env
+
+[Install]
+WantedBy=multi-user.target
