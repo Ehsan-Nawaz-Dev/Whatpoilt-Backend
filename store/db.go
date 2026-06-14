@@ -86,6 +86,12 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 
+		// ── shop access tokens (for Shopify API calls e.g. order tagging) ──
+		`CREATE TABLE IF NOT EXISTS shop_tokens (
+			shop_domain  TEXT PRIMARY KEY,
+			access_token TEXT NOT NULL,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
 		// ── admin config (key-value store for profile + overrideable key) ───
 		`CREATE TABLE IF NOT EXISTS admin_config (
 			key   TEXT PRIMARY KEY,

@@ -133,6 +133,10 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
 	})
+
+	// Tag the order in Shopify asynchronously — never blocks the webhook response.
+	go h.tagOrderAsync(shop, order.ID, trigger)
+
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
 }
 

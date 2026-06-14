@@ -140,6 +140,24 @@ func main() {
 		c.Next()
 	})
 	{
+		// Called by the Remix frontend after OAuth to store the access token
+		// so the backend can call the Shopify Admin API (e.g. order tagging).
+		internal.POST("/register-shop", func(c *gin.Context) {
+			var req struct {
+				ShopDomain  string `json:"shop_domain"  binding:"required"`
+				AccessToken string `json:"access_token" binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			if err := db.SetShopToken(req.ShopDomain, req.AccessToken); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"ok": true})
+		})
+
 		internal.POST("/gdpr/customer-redact", gdprH.CustomerRedact)
 		internal.POST("/gdpr/shop-redact",     gdprH.ShopRedact)
 		internal.GET("/gdpr/customer-data",    gdprH.CustomerData)
@@ -154,6 +172,8 @@ func main() {
 		adm.GET("/profile",                  admH.GetProfile)
 		adm.PUT("/profile",                  admH.UpdateProfile)
 		adm.POST("/change-password",         admH.ChangePassword)
+		adm.GET("/order-tags",               admH.GetOrderTags)
+		adm.PUT("/order-tags",               admH.UpdateOrderTags)
 		adm.GET("/shops",                    admH.ListShops)
 		adm.DELETE("/shops/:shop",           admH.PurgeShop)
 		adm.GET("/plans",                    admH.ListPlans)

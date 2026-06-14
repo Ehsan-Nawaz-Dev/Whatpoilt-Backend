@@ -223,6 +223,45 @@ func (h *AdminHandler) DeleteAnnouncement(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
+// ─── Order Tags ───────────────────────────────────────────────────────────────
+
+// GET /admin/order-tags
+func (h *AdminHandler) GetOrderTags(c *gin.Context) {
+	tags := map[string]string{
+		"order_created":   h.db.GetAdminConfigValue("order_tag_order_created"),
+		"order_fulfilled": h.db.GetAdminConfigValue("order_tag_order_fulfilled"),
+		"order_cancelled": h.db.GetAdminConfigValue("order_tag_order_cancelled"),
+	}
+	// Fill defaults for any that aren't customised yet.
+	defaults := map[string]string{
+		"order_created":   "⏳ Pending Confirmation",
+		"order_fulfilled": "📦 Shipped - WA Notified",
+		"order_cancelled": "❌ Cancellation Sent",
+	}
+	for k, def := range defaults {
+		if tags[k] == "" {
+			tags[k] = def
+		}
+	}
+	c.JSON(200, tags)
+}
+
+// PUT /admin/order-tags
+func (h *AdminHandler) UpdateOrderTags(c *gin.Context) {
+	var req map[string]string
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	allowed := []string{"order_created", "order_fulfilled", "order_cancelled"}
+	for _, trigger := range allowed {
+		if tag, ok := req[trigger]; ok {
+			h.db.SetAdminConfigValue("order_tag_"+trigger, tag)
+		}
+	}
+	c.JSON(200, req)
+}
+
 // ─── Profile ──────────────────────────────────────────────────────────────────
 
 // GET /admin/profile
