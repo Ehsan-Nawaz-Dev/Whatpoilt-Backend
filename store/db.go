@@ -86,6 +86,15 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 
+		// ── Shopify OAuth sessions (replaces Prisma/PostgreSQL) ─────────────
+		`CREATE TABLE IF NOT EXISTS shopify_sessions (
+			id         TEXT PRIMARY KEY,
+			shop       TEXT NOT NULL,
+			data       TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE INDEX IF NOT EXISTS idx_sessions_shop ON shopify_sessions(shop)`,
+
 		// ── shop access tokens (for Shopify API calls e.g. order tagging) ──
 		`CREATE TABLE IF NOT EXISTS shop_tokens (
 			shop_domain  TEXT PRIMARY KEY,

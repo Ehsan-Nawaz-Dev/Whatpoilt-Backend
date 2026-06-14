@@ -75,6 +75,7 @@ func main() {
 	gdprH := handlers.NewGDPRHandler(db, registry)
 	anlH  := handlers.NewAnalyticsHandler(db)
 	admH  := handlers.NewAdminHandler(db, registry, config.App.DBPath)
+	sessH := handlers.NewSessionHandler(db)
 
 	// ── Authenticated API routes (/api/*) ─────────────────────────────────────
 	// Every request must carry Authorization: Bearer <BACKEND_API_KEY>
@@ -142,6 +143,13 @@ func main() {
 	{
 		// Called by the Remix frontend after OAuth to store the access token
 		// so the backend can call the Shopify Admin API (e.g. order tagging).
+		// ── Shopify session storage (replaces Prisma/PostgreSQL) ─────────────
+		internal.GET("/sessions/:id",           sessH.Load)
+		internal.POST("/sessions",              sessH.Store)
+		internal.DELETE("/sessions/:id",        sessH.Delete)
+		internal.POST("/sessions/delete-multi", sessH.DeleteMulti)
+		internal.GET("/sessions/by-shop/:shop", sessH.ByShop)
+
 		internal.POST("/register-shop", func(c *gin.Context) {
 			var req struct {
 				ShopDomain  string `json:"shop_domain"  binding:"required"`
