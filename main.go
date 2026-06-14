@@ -92,10 +92,12 @@ func main() {
 		wa.GET("/logs",       waH.ListLogs)
 
 		auto := api.Group("/automations")
-		auto.GET("",        autoH.List)
-		auto.POST("",       autoH.Create)
-		auto.PUT("/:id",    autoH.Update)
-		auto.DELETE("/:id", autoH.Delete)
+		auto.GET("",                  autoH.List)
+		auto.POST("",                 autoH.Create)
+		auto.PUT("/:id",              autoH.Update)
+		auto.DELETE("/:id",           autoH.Delete)
+		auto.PATCH("/:id/toggle",     autoH.Toggle)
+		auto.PATCH("/:id/template",   autoH.UpdateTemplate)
 
 		tmpl := api.Group("/templates")
 		tmpl.GET("",              tmplH.List)

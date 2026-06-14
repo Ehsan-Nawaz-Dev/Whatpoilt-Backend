@@ -15,7 +15,15 @@ func NewAutomationHandler(db *store.DB) *AutomationHandler { return &AutomationH
 
 // GET /api/automations
 func (h *AutomationHandler) List(c *gin.Context) {
-	items, err := h.db.ListAutomations(middleware.ShopFrom(c))
+	shop := middleware.ShopFrom(c)
+	// Auto-seed the 4 default automations on first load (idempotent).
+	if !h.db.DefaultAutomationsSeeded(shop) {
+		if !h.db.DefaultTemplatesSeeded(shop) {
+			h.db.SeedDefaultTemplates(shop)
+		}
+		h.db.SeedAutomations(shop)
+	}
+	items, err := h.db.ListAutomations(shop)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -72,4 +80,29 @@ func (h *AutomationHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// PATCH /api/automations/:id/toggle
+func (h *AutomationHandler) Toggle(c *gin.Context) {
+	if err := h.db.ToggleAutomation(c.Param("id"), middleware.ShopFrom(c)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// PATCH /api/automations/:id/template
+func (h *AutomationHandler) UpdateTemplate(c *gin.Context) {
+	var req struct {
+		TemplateID string `json:"template_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.UpdateAutomationTemplate(c.Param("id"), middleware.ShopFrom(c), req.TemplateID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

@@ -369,6 +369,68 @@ func (db *DB) DeleteAutomation(id, shop string) error {
 	return err
 }
 
+func (db *DB) ToggleAutomation(id, shop string) error {
+	_, err := db.conn.Exec(
+		`UPDATE automations SET is_active = CASE WHEN is_active=1 THEN 0 ELSE 1 END, updated_at=?
+		 WHERE id=? AND shop_domain=?`, time.Now(), id, shop)
+	return err
+}
+
+func (db *DB) UpdateAutomationTemplate(id, shop, templateID string) error {
+	_, err := db.conn.Exec(
+		`UPDATE automations SET template_id=?, updated_at=? WHERE id=? AND shop_domain=?`,
+		templateID, time.Now(), id, shop)
+	return err
+}
+
+// defaultAutomationDefs are the 4 built-in automations seeded for every shop.
+var defaultAutomationDefs = []struct {
+	Name         string
+	TriggerType  models.TriggerType
+	TemplateName string
+}{
+	{"Order Confirmation",        models.TriggerOrderCreated,   "Order Confirmation"},
+	{"Shipping Notification",     models.TriggerOrderFulfilled, "Shipping Alert"},
+	{"Cancellation Notice",       models.TriggerOrderCancelled, "Order Cancellation"},
+	{"Abandoned Cart Recovery",   models.TriggerAbandonedCart,  "Abandoned Cart Recovery"},
+}
+
+// SeedAutomations creates the 4 default automations for a shop if they don't exist.
+// Templates must already be seeded before calling this.
+func (db *DB) SeedAutomations(shop string) error {
+	for _, def := range defaultAutomationDefs {
+		var count int
+		db.conn.QueryRow(
+			`SELECT COUNT(*) FROM automations WHERE shop_domain=? AND trigger_type=?`,
+			shop, def.TriggerType,
+		).Scan(&count)
+		if count > 0 {
+			continue
+		}
+		var templateID string
+		db.conn.QueryRow(
+			`SELECT id FROM templates WHERE shop_domain=? AND name=? AND is_default=1`,
+			shop, def.TemplateName,
+		).Scan(&templateID)
+		db.conn.Exec(
+			`INSERT INTO automations
+			 (id,shop_domain,name,trigger_type,template_id,is_active,delay_minutes,created_at,updated_at)
+			 VALUES(?,?,?,?,?,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+			uuid.NewString(), shop, def.Name, string(def.TriggerType), templateID,
+		)
+	}
+	return nil
+}
+
+// DefaultAutomationsSeeded returns true when all 4 trigger types have an automation row.
+func (db *DB) DefaultAutomationsSeeded(shop string) bool {
+	var count int
+	db.conn.QueryRow(
+		`SELECT COUNT(DISTINCT trigger_type) FROM automations WHERE shop_domain=?`, shop,
+	).Scan(&count)
+	return count >= 4
+}
+
 // ─── Contacts ────────────────────────────────────────────────────────────────
 
 func (db *DB) ListContacts(shop string) ([]models.Contact, error) {
