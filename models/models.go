@@ -118,6 +118,73 @@ var DefaultTemplates = []Template{
 		IsActive:    true,
 		IsDefault:   true,
 	},
+	// ── 9 additional built-in templates (total = 18) ──────────────────────────
+	{
+		Name:        "Order Processing",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>>! ⚙️ Your order #<<order_number>> (<<total>>) is now being processed.\n\nWe'll send you a shipping notification the moment it's on its way. Thank you for choosing us! 💙",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Quick Order Thanks",
+		MessageType: MessageTypeText,
+		Content:     "Thank you for your order, <<name>>! 🎉\n\nOrder #<<order_number>> worth <<total>> has been received. We're packing it up right now and will notify you once it ships!",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Shipping Confirmation",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>>! 🚚 Your order #<<order_number>> has left our warehouse and is heading your way.\n\nTrack your shipment here: <<tracking_url>>\n\nExpected arrival: 3–5 business days.",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Post-Purchase Review",
+		MessageType: MessageTypePoll,
+		Content:     "Hi <<name>>! 🌟 We hope you're loving your order #<<order_number>>.\n\nHow would you rate your overall shopping experience with us?",
+		Options:     []string{"⭐⭐⭐⭐⭐ Excellent!", "⭐⭐⭐⭐ Great", "⭐⭐⭐ Average", "😕 Disappointing"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Refund Initiated",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>> 💙\n\nWe've initiated the refund for your cancelled order #<<order_number>> (<<total>>).\n\nRefunds typically appear within 5–7 business days depending on your bank. We hope to serve you again soon!",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Win-Back Offer",
+		MessageType: MessageTypeButtons,
+		Content:     "Hi <<name>>! 😊 We noticed your order #<<order_number>> was cancelled.\n\nWe'd love to have you back! Here's a special offer just for you.",
+		Options:     []string{"🛍️ Shop Again", "💬 Talk to Support"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Cart Save Reminder",
+		MessageType: MessageTypeText,
+		Content:     "Hey <<name>>! 👋 Just a friendly reminder — you left items worth <<total>> in your cart.\n\nYour items are reserved for a limited time. Complete your purchase here: <<cart_url>> 🛒",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Cart Discount Offer",
+		MessageType: MessageTypeButtons,
+		Content:     "Hi <<name>>! 🏷️ Still thinking about your cart worth <<total>>?\n\nComplete your purchase today and enjoy an exclusive discount. Don't let your items sell out!\n\n🛒 <<cart_url>>",
+		Options:     []string{"🛍️ Complete Purchase", "❓ I Need Help"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Admin Cancellation Alert",
+		MessageType: MessageTypeText,
+		Content:     "⚠️ *ORDER CANCELLED*\n\n📋 Order #<<order_number>>\n👤 Customer: <<name>>\n💰 Amount: <<total>>\n\nPlease process the refund and update inventory accordingly.",
+		IsActive:    true,
+		IsDefault:   true,
+	},
 }
 
 // Automation defines a rule that triggers WhatsApp messages based on Shopify events.

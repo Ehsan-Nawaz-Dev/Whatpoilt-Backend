@@ -383,26 +383,35 @@ func (db *DB) UpdateAutomationTemplate(id, shop, templateID string) error {
 	return err
 }
 
-// defaultAutomationDefs are the 4 built-in automations seeded for every shop.
+// defaultAutomationDefs are the 9 built-in automations seeded for every shop.
 var defaultAutomationDefs = []struct {
 	Name         string
 	TriggerType  models.TriggerType
 	TemplateName string
 }{
-	{"Order Confirmation",        models.TriggerOrderCreated,   "Order Confirmation"},
-	{"Shipping Notification",     models.TriggerOrderFulfilled, "Shipping Alert"},
-	{"Cancellation Notice",       models.TriggerOrderCancelled, "Order Cancellation"},
-	{"Abandoned Cart Recovery",   models.TriggerAbandonedCart,  "Abandoned Cart Recovery"},
+	// Order created (2)
+	{"Customer Order Confirmation", models.TriggerOrderCreated,   "Order Confirmation"},
+	{"Admin New Order Alert",       models.TriggerOrderCreated,   "Admin Order Alert"},
+	// Order fulfilled / shipped (3)
+	{"Shipping Notification",       models.TriggerOrderFulfilled, "Shipping Alert"},
+	{"Delivery Confirmation",       models.TriggerOrderFulfilled, "Delivery Alert"},
+	{"Post-Purchase Review",        models.TriggerOrderFulfilled, "Post-Purchase Review"},
+	// Order cancelled (2)
+	{"Cancellation Notice",         models.TriggerOrderCancelled, "Order Cancellation"},
+	{"Cancellation Verification",   models.TriggerOrderCancelled, "Cancellation Verification"},
+	// Abandoned cart (2)
+	{"Abandoned Cart Recovery",     models.TriggerAbandonedCart,  "Abandoned Cart Recovery"},
+	{"Cart Discount Offer",         models.TriggerAbandonedCart,  "Cart Discount Offer"},
 }
 
-// SeedAutomations creates the 4 default automations for a shop if they don't exist.
+// SeedAutomations creates the 9 default automations for a shop if they don't exist.
 // Templates must already be seeded before calling this.
 func (db *DB) SeedAutomations(shop string) error {
 	for _, def := range defaultAutomationDefs {
 		var count int
 		db.conn.QueryRow(
-			`SELECT COUNT(*) FROM automations WHERE shop_domain=? AND trigger_type=?`,
-			shop, def.TriggerType,
+			`SELECT COUNT(*) FROM automations WHERE shop_domain=? AND name=?`,
+			shop, def.Name,
 		).Scan(&count)
 		if count > 0 {
 			continue
@@ -422,13 +431,13 @@ func (db *DB) SeedAutomations(shop string) error {
 	return nil
 }
 
-// DefaultAutomationsSeeded returns true when all 4 trigger types have an automation row.
+// DefaultAutomationsSeeded returns true when the shop has at least 9 automation rows.
 func (db *DB) DefaultAutomationsSeeded(shop string) bool {
 	var count int
 	db.conn.QueryRow(
-		`SELECT COUNT(DISTINCT trigger_type) FROM automations WHERE shop_domain=?`, shop,
+		`SELECT COUNT(*) FROM automations WHERE shop_domain=?`, shop,
 	).Scan(&count)
-	return count >= 4
+	return count >= 9
 }
 
 // ─── Contacts ────────────────────────────────────────────────────────────────
