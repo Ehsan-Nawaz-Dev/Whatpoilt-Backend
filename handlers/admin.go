@@ -262,13 +262,52 @@ func (h *AdminHandler) UpdateOrderTags(c *gin.Context) {
 	c.JSON(200, req)
 }
 
+// ─── Login ────────────────────────────────────────────────────────────────────
+
+// POST /admin/login  (no auth required — this IS the auth)
+func (h *AdminHandler) Login(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Resolve active username (DB overrides default "admin").
+	username := h.db.GetAdminConfigValue("admin_username")
+	if username == "" {
+		username = "admin"
+	}
+
+	// Resolve active password/key (DB overrides env var).
+	activeKey := h.db.GetAdminKey()
+	if activeKey == "" {
+		activeKey = config.App.AdminAPIKey
+	}
+
+	if req.Username != username || req.Password != activeKey {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
+		return
+	}
+
+	// Return the token — the frontend stores it and sends it as Bearer on all requests.
+	c.JSON(200, gin.H{"token": activeKey, "username": username})
+}
+
 // ─── Profile ──────────────────────────────────────────────────────────────────
 
 // GET /admin/profile
 func (h *AdminHandler) GetProfile(c *gin.Context) {
+	username := h.db.GetAdminConfigValue("admin_username")
+	if username == "" {
+		username = "admin"
+	}
 	c.JSON(200, models.AdminProfile{
 		Name:      h.db.GetAdminConfigValue("profile_name"),
 		AvatarURL: h.db.GetAdminConfigValue("profile_avatar"),
+		Username:  username,
 	})
 }
 
@@ -281,6 +320,9 @@ func (h *AdminHandler) UpdateProfile(c *gin.Context) {
 	}
 	h.db.SetAdminConfigValue("profile_name", req.Name)
 	h.db.SetAdminConfigValue("profile_avatar", req.AvatarURL)
+	if req.Username != "" {
+		h.db.SetAdminConfigValue("admin_username", req.Username)
+	}
 	c.JSON(200, req)
 }
 

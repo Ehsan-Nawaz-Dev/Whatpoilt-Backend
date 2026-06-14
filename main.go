@@ -163,6 +163,9 @@ func main() {
 		internal.GET("/gdpr/customer-data",    gdprH.CustomerData)
 	}
 
+	// ── Admin login (public — no auth required) ───────────────────────────────
+	r.POST("/admin/login", admH.Login)
+
 	// ── Admin routes (protected by ADMIN_API_KEY) ─────────────────────────────
 	adm := r.Group("/admin")
 	adm.Use(handlers.AdminAuth(db, config.App.AdminAPIKey))
