@@ -113,7 +113,7 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 }
 
 func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger models.TriggerType, order models.ShopifyOrder) {
-	phone := order.Customer.Phone
+	phone := order.ResolvePhone()
 	slog.Info("webhook order received", "shop", shop, "trigger", trigger, "order", order.OrderNumber, "has_phone", phone != "")
 	if phone == "" {
 		slog.Warn("skipping order — no phone number on customer", "shop", shop, "order", order.OrderNumber)

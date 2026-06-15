@@ -238,12 +238,30 @@ type MessageLog struct {
 
 // ShopifyOrder is the subset of Shopify order data we care about.
 type ShopifyOrder struct {
-	ID          int64             `json:"id"`
-	OrderNumber int               `json:"order_number"`
-	TotalPrice  string            `json:"total_price"`
-	Currency    string            `json:"currency"`
-	Customer    ShopifyCustomer   `json:"customer"`
-	LineItems   []ShopifyLineItem `json:"line_items"`
+	ID              int64             `json:"id"`
+	OrderNumber     int               `json:"order_number"`
+	TotalPrice      string            `json:"total_price"`
+	Currency        string            `json:"currency"`
+	Phone           string            `json:"phone"` // top-level order phone
+	Customer        ShopifyCustomer   `json:"customer"`
+	ShippingAddress ShopifyAddress    `json:"shipping_address"`
+	BillingAddress  ShopifyAddress    `json:"billing_address"`
+	LineItems       []ShopifyLineItem `json:"line_items"`
+}
+
+// ResolvePhone returns the first non-empty phone from all possible locations.
+func (o *ShopifyOrder) ResolvePhone() string {
+	for _, p := range []string{
+		o.Customer.Phone,
+		o.Phone,
+		o.ShippingAddress.Phone,
+		o.BillingAddress.Phone,
+	} {
+		if p != "" {
+			return p
+		}
+	}
+	return ""
 }
 
 type ShopifyCustomer struct {
@@ -252,6 +270,10 @@ type ShopifyCustomer struct {
 	LastName  string `json:"last_name"`
 	Phone     string `json:"phone"`
 	Email     string `json:"email"`
+}
+
+type ShopifyAddress struct {
+	Phone string `json:"phone"`
 }
 
 type ShopifyLineItem struct {
