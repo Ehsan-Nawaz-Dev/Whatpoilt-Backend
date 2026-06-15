@@ -232,6 +232,8 @@ func (m *Manager) Logout() error {
 }
 
 // SendPollMessage sends a WhatsApp native poll.
+// Uses BuildPollCreation so the message is properly E2E-encrypted —
+// without this the recipient sees "Waiting for this message".
 func (m *Manager) SendPollMessage(phone, question string, options []string) error {
 	phone, err := ValidatePhone(phone)
 	if err != nil {
@@ -250,23 +252,16 @@ func (m *Manager) SendPollMessage(phone, question string, options []string) erro
 		options = options[:12]
 	}
 
-	pollOpts := make([]*waProto.PollCreationMessage_Option, len(options))
-	for i, o := range options {
-		o := o
-		pollOpts[i] = &waProto.PollCreationMessage_Option{OptionName: proto.String(o)}
-	}
-
 	jid := types.NewJID(phone, types.DefaultUserServer)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	_, err = client.SendMessage(ctx, jid, &waProto.Message{
-		PollCreationMessage: &waProto.PollCreationMessage{
-			Name:                   proto.String(question),
-			Options:                pollOpts,
-			SelectableOptionsCount: proto.Uint32(1),
-		},
-	})
+	msg, _, err := client.BuildPollCreation(question, options, 1)
+	if err != nil {
+		return fmt.Errorf("build poll: %w", err)
+	}
+
+	_, err = client.SendMessage(ctx, jid, msg)
 	return err
 }
 
