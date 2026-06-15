@@ -183,7 +183,7 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		}
 		resolved := resolveTemplate(tmpl.Content, vars)
 		final := whatsapp.RandomizeMessageForTrigger(resolved, trigger)
-		items = append(items, loadedAuto{auto, tmpl, final})
+		items = append(items, loadedAuto{auto, *tmpl, final})
 	}
 
 	// positiveOption = first option of the first active poll in this batch.
