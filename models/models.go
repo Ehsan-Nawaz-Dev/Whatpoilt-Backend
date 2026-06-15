@@ -287,6 +287,7 @@ type ShopifyCheckout struct {
 	TotalPrice           string          `json:"total_price"`
 	AbandonedCheckoutURL string          `json:"abandoned_checkout_url"`
 	Customer             ShopifyCustomer `json:"customer"`
+	BillingAddress       ShopifyAddress  `json:"billing_address"`
 }
 
 // SendMessageRequest is the request body for the manual send endpoint.

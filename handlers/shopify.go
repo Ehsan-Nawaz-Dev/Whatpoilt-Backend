@@ -86,10 +86,15 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 
 	var checkout models.ShopifyCheckout
 	if err := json.Unmarshal(body, &checkout); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		slog.Warn("abandoned cart: invalid payload", "shop", shop, "err", err)
+		c.JSON(http.StatusOK, gin.H{"skipped": "invalid payload"}) // return 200 so Shopify stops retrying
 		return
 	}
+	// Resolve phone from customer or billing address
 	phone := checkout.Customer.Phone
+	if phone == "" {
+		phone = checkout.BillingAddress.Phone
+	}
 	if phone == "" {
 		c.JSON(http.StatusOK, gin.H{"skipped": "no phone number"})
 		return
