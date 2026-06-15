@@ -415,13 +415,16 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 			if v.Info.IsFromMe {
 				phone = v.Info.Chat.User // echo: Chat JID is the actual customer
 			}
+			slog.Info("poll vote event received", "phone", phone, "is_from_me", v.Info.IsFromMe)
 			if phone != "" && m.onPollVote != nil {
 				m.mu.RLock()
 				client := m.client
 				m.mu.RUnlock()
 				if client != nil {
 					if pollVote, err := client.DecryptPollVote(context.Background(), v); err == nil {
-						m.onPollVote(phone, pollVote.GetSelectedOptions())
+						hashes := pollVote.GetSelectedOptions()
+						slog.Info("poll vote decrypted", "phone", phone, "selected_option_count", len(hashes))
+						m.onPollVote(phone, hashes)
 					} else {
 						slog.Warn("poll vote decryption failed", "phone", phone, "err", err)
 					}

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -785,6 +786,10 @@ func optionVoted(option string, votedHashes [][]byte) bool {
 // votes for triggerOption in the confirmation poll. Pass "" to fire on any message.
 func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string, triggerOption string) error {
 	phone = normalizePhone(phone)
+	slog.Info("storing pending confirmation",
+		"shop", shop, "phone", phone,
+		"trigger_option", triggerOption,
+		"reply_type", msgType)
 	optJSON, _ := json.Marshal(options)
 	_, err := db.conn.Exec(
 		`INSERT INTO pending_confirmations
@@ -820,10 +825,36 @@ func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *
 	}
 	json.Unmarshal([]byte(optsJSON), &pc.ReplyOptions)
 
-	// If a trigger option is specified, require its hash to appear in the voted set.
-	// Plain-text replies (votedHashes == nil) never satisfy a trigger-option guard.
-	if pc.TriggerOption != "" && !optionVoted(pc.TriggerOption, votedHashes) {
-		return nil
+	slog.Info("pop pending confirmation: found entry",
+		"shop", shop, "phone", phone,
+		"trigger_option", pc.TriggerOption,
+		"via_poll_vote", votedHashes != nil,
+		"voted_hash_count", len(votedHashes))
+
+	if votedHashes == nil {
+		// Text-message path: entries that require a specific poll vote must NOT fire here.
+		if pc.TriggerOption != "" {
+			slog.Info("pop pending confirmation: text message blocked by poll trigger_option guard",
+				"shop", shop, "phone", phone, "trigger_option", pc.TriggerOption)
+			return nil
+		}
+	} else {
+		// Poll-vote path: trigger_option must be set, and the voted hash must match it.
+		if pc.TriggerOption == "" {
+			slog.Warn("pop pending confirmation: entry has no trigger_option — cannot verify poll vote, skipping",
+				"shop", shop, "phone", phone)
+			return nil
+		}
+		expectedHash := sha256.Sum256([]byte(pc.TriggerOption))
+		slog.Info("pop pending confirmation: verifying hash",
+			"trigger_option", pc.TriggerOption,
+			"expected_hash_hex4", fmt.Sprintf("%x", expectedHash[:4]))
+		if !optionVoted(pc.TriggerOption, votedHashes) {
+			slog.Info("pop pending confirmation: voted option hash does not match trigger_option — reply blocked",
+				"trigger_option", pc.TriggerOption, "voted_hash_count", len(votedHashes))
+			return nil
+		}
+		slog.Info("pop pending confirmation: hash matched — sending reply", "shop", shop, "phone", phone)
 	}
 
 	db.conn.Exec(`DELETE FROM pending_confirmations WHERE shop_domain=? AND phone=?`, shop, phone)
