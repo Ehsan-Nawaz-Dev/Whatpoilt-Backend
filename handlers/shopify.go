@@ -114,13 +114,17 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 
 func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger models.TriggerType, order models.ShopifyOrder) {
 	phone := order.Customer.Phone
+	slog.Info("webhook order received", "shop", shop, "trigger", trigger, "order", order.OrderNumber, "has_phone", phone != "")
 	if phone == "" {
+		slog.Warn("skipping order — no phone number on customer", "shop", shop, "order", order.OrderNumber)
 		c.JSON(http.StatusOK, gin.H{"skipped": "no phone on order"})
 		return
 	}
 
 	automations, _ := h.db.GetAutomationsByTrigger(shop, trigger)
+	slog.Info("active automations for trigger", "shop", shop, "trigger", trigger, "count", len(automations))
 	if len(automations) == 0 {
+		slog.Warn("no active automations for trigger", "shop", shop, "trigger", trigger)
 		c.JSON(http.StatusOK, gin.H{"message": "no active automations"})
 		return
 	}
