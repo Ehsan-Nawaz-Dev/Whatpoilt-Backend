@@ -411,11 +411,12 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 		// before the IsFromMe guard. Decrypt the vote so the caller can verify
 		// which option was selected before sending any pending reply.
 		if v.Message.GetPollUpdateMessage() != nil {
-			phone := v.Info.Sender.User
-			if v.Info.IsFromMe {
-				phone = v.Info.Chat.User // echo: Chat JID is the actual customer
-			}
-			slog.Info("poll vote event received", "phone", phone, "is_from_me", v.Info.IsFromMe)
+			// Chat.User is the customer's phone number in both directions of a 1:1 chat.
+			// Sender.User may be a WhatsApp LID (e.g. "68217166925845") in the newer
+			// multi-device protocol and is NOT suitable for DB lookups.
+			phone := v.Info.Chat.User
+			slog.Info("poll vote event received", "phone", phone,
+				"sender", v.Info.Sender.User, "is_from_me", v.Info.IsFromMe)
 			if phone != "" && m.onPollVote != nil {
 				m.mu.RLock()
 				client := m.client
