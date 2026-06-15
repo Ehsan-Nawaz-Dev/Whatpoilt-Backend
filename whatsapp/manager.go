@@ -256,10 +256,7 @@ func (m *Manager) SendPollMessage(phone, question string, options []string) erro
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	msg, _, err := client.BuildPollCreation(question, options, 1)
-	if err != nil {
-		return fmt.Errorf("build poll: %w", err)
-	}
+	msg := client.BuildPollCreation(question, options, 1)
 
 	_, err = client.SendMessage(ctx, jid, msg)
 	return err
