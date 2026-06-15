@@ -400,6 +400,21 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 		m.setStatus(StatusLoggedOut)
 
 	case *events.Message:
+		// Poll votes arrive as PollUpdateMessage. In WhatsApp's multi-device
+		// protocol they can carry IsFromMe=true (sync echo), so handle them
+		// before the IsFromMe guard. Use Chat JID when it's an echo so we
+		// identify the actual customer rather than ourselves.
+		if v.Message.GetPollUpdateMessage() != nil {
+			phone := v.Info.Sender.User
+			if v.Info.IsFromMe {
+				phone = v.Info.Chat.User
+			}
+			if phone != "" && m.onConfirmation != nil {
+				m.onConfirmation(phone)
+			}
+			return
+		}
+
 		if v.Info.IsFromMe {
 			break // ignore messages we sent ourselves
 		}
@@ -413,8 +428,8 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 			break
 		}
 
-		// Confirmation reply: fires on any incoming message (text or poll vote)
-		// from a customer who has a pending confirmation record.
+		// Confirmation reply: fires on any incoming text message from a customer
+		// who has a pending confirmation record.
 		if m.onConfirmation != nil {
 			m.onConfirmation(phone)
 		}

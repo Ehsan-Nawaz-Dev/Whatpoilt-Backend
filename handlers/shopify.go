@@ -159,6 +159,15 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		return
 	}
 
+	// A cancelled order voids the Post-Confirmation Reply that was stored when
+	// the order was created. Without this cleanup the stale reply would fire
+	// the next time the customer sends any message (e.g. responding to the
+	// Cancellation Verification poll), making it look like a phantom
+	// "Customer Order Confirmation" was sent.
+	if trigger == models.TriggerOrderCancelled {
+		h.db.DeletePendingConfirmation(shop, phone)
+	}
+
 	for _, auto := range autos {
 		tmpl, err := h.db.GetTemplate(auto.TemplateID, shop)
 		if err != nil || !tmpl.IsActive {

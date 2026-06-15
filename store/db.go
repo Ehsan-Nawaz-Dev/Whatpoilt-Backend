@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,6 +137,9 @@ func (db *DB) migrate() error {
 			reply_message TEXT NOT NULL,
 			reply_type TEXT NOT NULL DEFAULT 'text',
 			reply_options TEXT NOT NULL DEFAULT '[]',
+			reply_no_message TEXT NOT NULL DEFAULT '',
+			reply_no_type TEXT NOT NULL DEFAULT 'text',
+			reply_no_options TEXT NOT NULL DEFAULT '[]',
 			expires_at DATETIME NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(shop_domain, phone))`,
@@ -750,7 +754,18 @@ type PendingConfirmation struct {
 	ReplyOptions []string
 }
 
+// normalizePhone strips formatting so Shopify phones (e.g. "+1 415-555-2671")
+// match the digit-only format WhatsApp JIDs use ("14155552671").
+func normalizePhone(phone string) string {
+	phone = strings.TrimPrefix(phone, "+")
+	for _, r := range []string{" ", "-", "(", ")", "."} {
+		phone = strings.ReplaceAll(phone, r, "")
+	}
+	return phone
+}
+
 func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string) error {
+	phone = normalizePhone(phone)
 	optJSON, _ := json.Marshal(options)
 	_, err := db.conn.Exec(
 		`INSERT INTO pending_confirmations
@@ -767,6 +782,7 @@ func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, opt
 }
 
 func (db *DB) PopPendingConfirmation(shop, phone string) *PendingConfirmation {
+	phone = normalizePhone(phone)
 	var pc PendingConfirmation
 	var optsJSON string
 	err := db.conn.QueryRow(
@@ -781,6 +797,14 @@ func (db *DB) PopPendingConfirmation(shop, phone string) *PendingConfirmation {
 	json.Unmarshal([]byte(optsJSON), &pc.ReplyOptions)
 	db.conn.Exec(`DELETE FROM pending_confirmations WHERE shop_domain=? AND phone=?`, shop, phone)
 	return &pc
+}
+
+// DeletePendingConfirmation removes any stored pending reply for a customer.
+// Called when an order is cancelled so a stale Post-Confirmation Reply is not
+// mistakenly sent when the customer later replies to a Cancellation Verification poll.
+func (db *DB) DeletePendingConfirmation(shop, phone string) {
+	phone = normalizePhone(phone)
+	db.conn.Exec(`DELETE FROM pending_confirmations WHERE shop_domain=? AND phone=?`, shop, phone)
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
