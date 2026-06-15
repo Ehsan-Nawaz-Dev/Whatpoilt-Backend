@@ -11,10 +11,11 @@ import (
 // Registry manages one Manager per Shopify store so every merchant has their
 // own independent WhatsApp phone number and session.
 type Registry struct {
-	mu      sync.RWMutex
-	stores  map[string]*Manager
-	sessDir string // data/sessions/
-	optOut  shopOptOutFunc
+	mu           sync.RWMutex
+	stores       map[string]*Manager
+	sessDir      string // data/sessions/
+	optOut       shopOptOutFunc
+	confirmation shopConfirmationFunc
 }
 
 func NewRegistry(sessDir string) (*Registry, error) {
@@ -54,6 +55,11 @@ func (r *Registry) For(shop string) (*Manager, error) {
 		shopCopy := shop
 		mgr.SetOptOutHandler(func(phone string) { r.optOut(shopCopy, phone) })
 	}
+	// Wire confirmation callback.
+	if r.confirmation != nil {
+		shopCopy := shop
+		mgr.SetConfirmationHandler(func(phone string) { r.confirmation(shopCopy, phone) })
+	}
 	r.stores[shop] = mgr
 	return mgr, nil
 }
@@ -69,12 +75,19 @@ func (r *Registry) Remove(shop string) {
 }
 
 type shopOptOutFunc func(shop, phone string)
+type shopConfirmationFunc func(shop, phone string)
 
 // SetOptOutHandler injects a callback that fires when a customer sends an opt-out
 // keyword. The registry forwards it into every manager it creates.
 func (r *Registry) SetOptOutHandler(fn shopOptOutFunc) {
 	r.mu.Lock()
 	r.optOut = fn
+	r.mu.Unlock()
+}
+
+func (r *Registry) SetConfirmationHandler(fn shopConfirmationFunc) {
+	r.mu.Lock()
+	r.confirmation = fn
 	r.mu.Unlock()
 }
 

@@ -44,6 +44,26 @@ func main() {
 		db.SetContactOptOut(shop, phone, true)
 		slog.Info("contact opted out", "shop", shop, "phone", phone)
 	})
+	registry.SetConfirmationHandler(func(shop, phone string) {
+		pc := db.PopPendingConfirmation(shop, phone)
+		if pc == nil {
+			return
+		}
+		slog.Info("customer confirmed — sending post-confirmation reply", "shop", shop, "phone", phone)
+		mgr, err := registry.For(shop)
+		if err != nil {
+			return
+		}
+		cfg, _ := db.GetSettings(shop)
+		switch pc.ReplyType {
+		case "poll":
+			mgr.SendPollMessage(phone, pc.ReplyMessage, pc.ReplyOptions)
+		case "buttons":
+			mgr.SendButtonMessage(phone, pc.ReplyMessage, pc.ReplyOptions)
+		default:
+			mgr.SendMessageWithTyping(phone, pc.ReplyMessage, cfg)
+		}
+	})
 	// Restore existing WhatsApp sessions from disk.
 	registry.ConnectAll()
 

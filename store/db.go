@@ -128,6 +128,18 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 
+		// ── pending confirmation replies (sent after customer confirms poll) ─
+		`CREATE TABLE IF NOT EXISTS pending_confirmations (
+			id TEXT PRIMARY KEY,
+			shop_domain TEXT NOT NULL,
+			phone TEXT NOT NULL,
+			reply_message TEXT NOT NULL,
+			reply_type TEXT NOT NULL DEFAULT 'text',
+			reply_options TEXT NOT NULL DEFAULT '[]',
+			expires_at DATETIME NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(shop_domain, phone))`,
+
 		// ── indexes — every query filters by shop_domain ───────────────────
 		`CREATE INDEX IF NOT EXISTS idx_templates_shop   ON templates(shop_domain)`,
 		`CREATE INDEX IF NOT EXISTS idx_automations_shop ON automations(shop_domain, trigger_type, is_active)`,
@@ -726,6 +738,49 @@ func (db *DB) GetCustomerData(shop, phone string) map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{"contact": contact, "messages": customerLogs}
+}
+
+// ─── Pending Confirmations ────────────────────────────────────────────────────
+
+type PendingConfirmation struct {
+	ShopDomain   string
+	Phone        string
+	ReplyMessage string
+	ReplyType    string
+	ReplyOptions []string
+}
+
+func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string) error {
+	optJSON, _ := json.Marshal(options)
+	_, err := db.conn.Exec(
+		`INSERT INTO pending_confirmations
+		 (id, shop_domain, phone, reply_message, reply_type, reply_options, expires_at)
+		 VALUES(?,?,?,?,?,?, datetime('now','+24 hours'))
+		 ON CONFLICT(shop_domain,phone) DO UPDATE SET
+		   reply_message=excluded.reply_message,
+		   reply_type=excluded.reply_type,
+		   reply_options=excluded.reply_options,
+		   expires_at=excluded.expires_at`,
+		uuid.NewString(), shop, phone, message, msgType, string(optJSON),
+	)
+	return err
+}
+
+func (db *DB) PopPendingConfirmation(shop, phone string) *PendingConfirmation {
+	var pc PendingConfirmation
+	var optsJSON string
+	err := db.conn.QueryRow(
+		`SELECT shop_domain,phone,reply_message,reply_type,reply_options
+		 FROM pending_confirmations
+		 WHERE shop_domain=? AND phone=? AND expires_at > datetime('now')`,
+		shop, phone,
+	).Scan(&pc.ShopDomain, &pc.Phone, &pc.ReplyMessage, &pc.ReplyType, &optsJSON)
+	if err != nil {
+		return nil
+	}
+	json.Unmarshal([]byte(optsJSON), &pc.ReplyOptions)
+	db.conn.Exec(`DELETE FROM pending_confirmations WHERE shop_domain=? AND phone=?`, shop, phone)
+	return &pc
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────

@@ -167,8 +167,18 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 
 		resolved := resolveTemplate(tmpl.Content, vars)
 		final := whatsapp.RandomizeMessageForTrigger(resolved, trigger)
-		runAt := time.Now().Add(whatsapp.JitterDelay(auto.DelayMinutes))
 
+		// "Post-Confirmation Reply" is held back until the customer confirms.
+		// Store it as a pending confirmation instead of queuing immediately.
+		if auto.Name == "Post-Confirmation Reply" {
+			if err := h.db.StorePendingConfirmation(shop, phone, final,
+				string(tmpl.MessageType), tmpl.Options); err != nil {
+				slog.Error("store pending confirmation", "shop", shop, "err", err)
+			}
+			continue
+		}
+
+		runAt := time.Now().Add(whatsapp.JitterDelay(auto.DelayMinutes))
 		if err := h.db.EnqueueJob(shop, auto.ID, tmpl.ID, phone, final,
 			tmpl.MessageType, tmpl.Options, runAt); err != nil {
 			slog.Error("enqueue job", "shop", shop, "err", err)

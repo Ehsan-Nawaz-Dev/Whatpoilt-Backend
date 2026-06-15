@@ -43,6 +43,10 @@ type QREvent struct {
 // OptOutFunc is called when a customer sends an opt-out keyword.
 type OptOutFunc func(phone string)
 
+// ConfirmationFunc is called when a customer sends any message (text or poll
+// vote) so the caller can look up and deliver a pending confirmation reply.
+type ConfirmationFunc func(phone string)
+
 // Manager wraps a single shop's whatsmeow client.
 type Manager struct {
 	mu          sync.RWMutex
@@ -53,8 +57,11 @@ type Manager struct {
 
 	pairingMu sync.Mutex // prevents two goroutines starting QR flow simultaneously
 
-	onOptOut OptOutFunc // injected by registry
+	onOptOut        OptOutFunc       // injected by registry
+	onConfirmation  ConfirmationFunc // injected by registry
 }
+
+func (m *Manager) SetConfirmationHandler(fn ConfirmationFunc) { m.onConfirmation = fn }
 
 var optOutKeywords = regexp.MustCompile(`(?i)^(stop|unsubscribe|opt.?out|no|cancel|0|quit|end)$`)
 
@@ -401,11 +408,23 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 		m.setStatus(StatusLoggedOut)
 
 	case *events.Message:
+		if v.Info.IsFromMe {
+			break // ignore messages we sent ourselves
+		}
+		phone := v.Info.Sender.User
 		text := strings.TrimSpace(v.Message.GetConversation())
+
+		// Opt-out check
 		if optOutKeywords.MatchString(text) && m.onOptOut != nil {
-			phone := v.Info.Sender.User
 			slog.Info("opt-out received", "phone", phone)
 			m.onOptOut(phone)
+			break
+		}
+
+		// Confirmation reply: fires on any incoming message (text or poll vote)
+		// from a customer who has a pending confirmation record.
+		if m.onConfirmation != nil {
+			m.onConfirmation(phone)
 		}
 	}
 }
