@@ -420,8 +420,8 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 				client := m.client
 				m.mu.RUnlock()
 				if client != nil {
-					if hashes, err := client.DecryptPollVote(v); err == nil {
-						m.onPollVote(phone, hashes)
+					if pollVote, err := client.DecryptPollVote(context.Background(), v); err == nil {
+						m.onPollVote(phone, pollVote.GetSelectedOptions())
 					} else {
 						slog.Warn("poll vote decryption failed", "phone", phone, "err", err)
 					}
