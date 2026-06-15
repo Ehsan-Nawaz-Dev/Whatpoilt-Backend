@@ -821,6 +821,7 @@ func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *
 		shop, phone,
 	).Scan(&pc.ShopDomain, &pc.Phone, &pc.ReplyMessage, &pc.ReplyType, &optsJSON, &pc.TriggerOption)
 	if err != nil {
+		slog.Info("pop pending confirmation: no entry found (or expired)", "shop", shop, "phone", phone)
 		return nil
 	}
 	json.Unmarshal([]byte(optsJSON), &pc.ReplyOptions)
