@@ -1,6 +1,8 @@
 ﻿package store
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -140,6 +142,7 @@ func (db *DB) migrate() error {
 			reply_no_message TEXT NOT NULL DEFAULT '',
 			reply_no_type TEXT NOT NULL DEFAULT 'text',
 			reply_no_options TEXT NOT NULL DEFAULT '[]',
+			trigger_option TEXT NOT NULL DEFAULT '',
 			expires_at DATETIME NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(shop_domain, phone))`,
@@ -161,6 +164,7 @@ func (db *DB) migrate() error {
 		`ALTER TABLE contacts     ADD COLUMN opted_out INTEGER DEFAULT 0`,
 		`ALTER TABLE pending_jobs ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'`,
 		`ALTER TABLE pending_jobs ADD COLUMN options TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE pending_confirmations ADD COLUMN trigger_option TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, s := range stmts {
@@ -747,11 +751,12 @@ func (db *DB) GetCustomerData(shop, phone string) map[string]interface{} {
 // ─── Pending Confirmations ────────────────────────────────────────────────────
 
 type PendingConfirmation struct {
-	ShopDomain   string
-	Phone        string
-	ReplyMessage string
-	ReplyType    string
-	ReplyOptions []string
+	ShopDomain    string
+	Phone         string
+	ReplyMessage  string
+	ReplyType     string
+	ReplyOptions  []string
+	TriggerOption string // SHA256 of this option must be in votedHashes to fire
 }
 
 // normalizePhone strips formatting so Shopify phones (e.g. "+1 415-555-2671")
@@ -764,37 +769,62 @@ func normalizePhone(phone string) string {
 	return phone
 }
 
-func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string) error {
+// optionVoted returns true when the SHA256 hash of option appears in votedHashes.
+func optionVoted(option string, votedHashes [][]byte) bool {
+	h := sha256.Sum256([]byte(option))
+	for _, v := range votedHashes {
+		if bytes.Equal(h[:], v) {
+			return true
+		}
+	}
+	return false
+}
+
+// StorePendingConfirmation saves a reply that is only sent after the customer
+// votes for triggerOption in the confirmation poll. Pass "" to fire on any message.
+func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string, triggerOption string) error {
 	phone = normalizePhone(phone)
 	optJSON, _ := json.Marshal(options)
 	_, err := db.conn.Exec(
 		`INSERT INTO pending_confirmations
-		 (id, shop_domain, phone, reply_message, reply_type, reply_options, expires_at)
-		 VALUES(?,?,?,?,?,?, datetime('now','+24 hours'))
+		 (id, shop_domain, phone, reply_message, reply_type, reply_options, trigger_option, expires_at)
+		 VALUES(?,?,?,?,?,?,?, datetime('now','+24 hours'))
 		 ON CONFLICT(shop_domain,phone) DO UPDATE SET
 		   reply_message=excluded.reply_message,
 		   reply_type=excluded.reply_type,
 		   reply_options=excluded.reply_options,
+		   trigger_option=excluded.trigger_option,
 		   expires_at=excluded.expires_at`,
-		uuid.NewString(), shop, phone, message, msgType, string(optJSON),
+		uuid.NewString(), shop, phone, message, msgType, string(optJSON), triggerOption,
 	)
 	return err
 }
 
-func (db *DB) PopPendingConfirmation(shop, phone string) *PendingConfirmation {
+// PopPendingConfirmation retrieves and deletes the stored reply for a customer.
+// votedHashes is the slice of SHA256 option hashes returned by DecryptPollVote;
+// pass nil for plain-text messages. When TriggerOption is set, the reply is only
+// returned if one of the voted hashes matches — preventing wrong-option triggers.
+func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *PendingConfirmation {
 	phone = normalizePhone(phone)
 	var pc PendingConfirmation
 	var optsJSON string
 	err := db.conn.QueryRow(
-		`SELECT shop_domain,phone,reply_message,reply_type,reply_options
+		`SELECT shop_domain,phone,reply_message,reply_type,reply_options,COALESCE(trigger_option,'')
 		 FROM pending_confirmations
 		 WHERE shop_domain=? AND phone=? AND expires_at > datetime('now')`,
 		shop, phone,
-	).Scan(&pc.ShopDomain, &pc.Phone, &pc.ReplyMessage, &pc.ReplyType, &optsJSON)
+	).Scan(&pc.ShopDomain, &pc.Phone, &pc.ReplyMessage, &pc.ReplyType, &optsJSON, &pc.TriggerOption)
 	if err != nil {
 		return nil
 	}
 	json.Unmarshal([]byte(optsJSON), &pc.ReplyOptions)
+
+	// If a trigger option is specified, require its hash to appear in the voted set.
+	// Plain-text replies (votedHashes == nil) never satisfy a trigger-option guard.
+	if pc.TriggerOption != "" && !optionVoted(pc.TriggerOption, votedHashes) {
+		return nil
+	}
+
 	db.conn.Exec(`DELETE FROM pending_confirmations WHERE shop_domain=? AND phone=?`, shop, phone)
 	return &pc
 }

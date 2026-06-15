@@ -44,12 +44,7 @@ func main() {
 		db.SetContactOptOut(shop, phone, true)
 		slog.Info("contact opted out", "shop", shop, "phone", phone)
 	})
-	registry.SetConfirmationHandler(func(shop, phone string) {
-		pc := db.PopPendingConfirmation(shop, phone)
-		if pc == nil {
-			return
-		}
-		slog.Info("customer confirmed — sending post-confirmation reply", "shop", shop, "phone", phone)
+	dispatchPendingReply := func(shop, phone string, pc *store.PendingConfirmation) {
 		mgr, err := registry.For(shop)
 		if err != nil {
 			return
@@ -63,6 +58,27 @@ func main() {
 		default:
 			mgr.SendMessageWithTyping(phone, pc.ReplyMessage, cfg)
 		}
+	}
+
+	// Plain-text message from customer: only fires pending confirmations that
+	// have no trigger_option guard. Passing nil hashes skips guarded entries.
+	registry.SetConfirmationHandler(func(shop, phone string) {
+		pc := db.PopPendingConfirmation(shop, phone, nil)
+		if pc == nil {
+			return
+		}
+		slog.Info("text confirmation — sending pending reply", "shop", shop, "phone", phone)
+		dispatchPendingReply(shop, phone, pc)
+	})
+	// Poll vote from customer: decrypted hashes are matched against trigger_option —
+	// only the correct "Yes" vote unlocks and sends the Post-Confirmation Reply.
+	registry.SetPollVoteHandler(func(shop, phone string, votedHashes [][]byte) {
+		pc := db.PopPendingConfirmation(shop, phone, votedHashes)
+		if pc == nil {
+			return
+		}
+		slog.Info("poll vote confirmed — sending pending reply", "shop", shop, "phone", phone)
+		dispatchPendingReply(shop, phone, pc)
 	})
 	// Restore existing WhatsApp sessions from disk.
 	registry.ConnectAll()

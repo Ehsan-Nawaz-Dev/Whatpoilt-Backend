@@ -168,6 +168,12 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		h.db.DeletePendingConfirmation(shop, phone)
 	}
 
+	// positiveOption is the first option of the first active poll in this trigger's
+	// automations (e.g. "✅ Yes, that's me!" for the Order Confirmation poll).
+	// It becomes the trigger_option for any Post-Confirmation Reply stored this run —
+	// the pending confirmation is only sent if the customer votes for that exact option.
+	var positiveOption string
+
 	for _, auto := range autos {
 		tmpl, err := h.db.GetTemplate(auto.TemplateID, shop)
 		if err != nil || !tmpl.IsActive {
@@ -177,11 +183,17 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		resolved := resolveTemplate(tmpl.Content, vars)
 		final := whatsapp.RandomizeMessageForTrigger(resolved, trigger)
 
-		// "Post-Confirmation Reply" is held back until the customer confirms.
-		// Store it as a pending confirmation instead of queuing immediately.
+		// Capture the first option of the first active poll we encounter —
+		// this is the "Yes / confirm" option that should gate the reply.
+		if positiveOption == "" && tmpl.MessageType == models.MessageTypePoll && len(tmpl.Options) > 0 {
+			positiveOption = tmpl.Options[0]
+		}
+
+		// "Post-Confirmation Reply" is held back until the customer votes the
+		// positive option. Store it with the trigger so only a "Yes" vote fires it.
 		if auto.Name == "Post-Confirmation Reply" {
 			if err := h.db.StorePendingConfirmation(shop, phone, final,
-				string(tmpl.MessageType), tmpl.Options); err != nil {
+				string(tmpl.MessageType), tmpl.Options, positiveOption); err != nil {
 				slog.Error("store pending confirmation", "shop", shop, "err", err)
 			}
 			continue

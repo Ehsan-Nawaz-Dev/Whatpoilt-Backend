@@ -43,9 +43,13 @@ type QREvent struct {
 // OptOutFunc is called when a customer sends an opt-out keyword.
 type OptOutFunc func(phone string)
 
-// ConfirmationFunc is called when a customer sends any message (text or poll
-// vote) so the caller can look up and deliver a pending confirmation reply.
+// ConfirmationFunc is called when a customer sends a plain-text message so the
+// caller can look up and deliver a pending confirmation reply.
 type ConfirmationFunc func(phone string)
+
+// PollVoteFunc is called when a customer votes in a poll. votedHashes contains
+// the SHA256 hashes of the selected option names (from DecryptPollVote).
+type PollVoteFunc func(phone string, votedHashes [][]byte)
 
 // Manager wraps a single shop's whatsmeow client.
 type Manager struct {
@@ -57,11 +61,13 @@ type Manager struct {
 
 	pairingMu sync.Mutex // prevents two goroutines starting QR flow simultaneously
 
-	onOptOut        OptOutFunc       // injected by registry
-	onConfirmation  ConfirmationFunc // injected by registry
+	onOptOut       OptOutFunc       // injected by registry
+	onConfirmation ConfirmationFunc // injected by registry (text messages)
+	onPollVote     PollVoteFunc     // injected by registry (poll votes)
 }
 
 func (m *Manager) SetConfirmationHandler(fn ConfirmationFunc) { m.onConfirmation = fn }
+func (m *Manager) SetPollVoteHandler(fn PollVoteFunc)         { m.onPollVote = fn }
 
 var optOutKeywords = regexp.MustCompile(`(?i)^(stop|unsubscribe|opt.?out|no|cancel|0|quit|end)$`)
 
@@ -402,15 +408,24 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 	case *events.Message:
 		// Poll votes arrive as PollUpdateMessage. In WhatsApp's multi-device
 		// protocol they can carry IsFromMe=true (sync echo), so handle them
-		// before the IsFromMe guard. Use Chat JID when it's an echo so we
-		// identify the actual customer rather than ourselves.
+		// before the IsFromMe guard. Decrypt the vote so the caller can verify
+		// which option was selected before sending any pending reply.
 		if v.Message.GetPollUpdateMessage() != nil {
 			phone := v.Info.Sender.User
 			if v.Info.IsFromMe {
-				phone = v.Info.Chat.User
+				phone = v.Info.Chat.User // echo: Chat JID is the actual customer
 			}
-			if phone != "" && m.onConfirmation != nil {
-				m.onConfirmation(phone)
+			if phone != "" && m.onPollVote != nil {
+				m.mu.RLock()
+				client := m.client
+				m.mu.RUnlock()
+				if client != nil {
+					if hashes, err := client.DecryptPollVote(v); err == nil {
+						m.onPollVote(phone, hashes)
+					} else {
+						slog.Warn("poll vote decryption failed", "phone", phone, "err", err)
+					}
+				}
 			}
 			return
 		}
@@ -428,8 +443,8 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 			break
 		}
 
-		// Confirmation reply: fires on any incoming text message from a customer
-		// who has a pending confirmation record.
+		// Text-message confirmation: only fires when there is no trigger_option
+		// guard on the pending confirmation (legacy / opt-in flows).
 		if m.onConfirmation != nil {
 			m.onConfirmation(phone)
 		}

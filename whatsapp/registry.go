@@ -16,6 +16,7 @@ type Registry struct {
 	sessDir      string // data/sessions/
 	optOut       shopOptOutFunc
 	confirmation shopConfirmationFunc
+	pollVote     shopPollVoteFunc
 }
 
 func NewRegistry(sessDir string) (*Registry, error) {
@@ -55,10 +56,15 @@ func (r *Registry) For(shop string) (*Manager, error) {
 		shopCopy := shop
 		mgr.SetOptOutHandler(func(phone string) { r.optOut(shopCopy, phone) })
 	}
-	// Wire confirmation callback.
+	// Wire confirmation callback (plain-text messages).
 	if r.confirmation != nil {
 		shopCopy := shop
 		mgr.SetConfirmationHandler(func(phone string) { r.confirmation(shopCopy, phone) })
+	}
+	// Wire poll-vote callback (decrypted poll votes).
+	if r.pollVote != nil {
+		shopCopy := shop
+		mgr.SetPollVoteHandler(func(phone string, hashes [][]byte) { r.pollVote(shopCopy, phone, hashes) })
 	}
 	r.stores[shop] = mgr
 	return mgr, nil
@@ -76,6 +82,7 @@ func (r *Registry) Remove(shop string) {
 
 type shopOptOutFunc func(shop, phone string)
 type shopConfirmationFunc func(shop, phone string)
+type shopPollVoteFunc func(shop, phone string, votedHashes [][]byte)
 
 // SetOptOutHandler injects a callback that fires when a customer sends an opt-out
 // keyword. The registry forwards it into every manager it creates.
@@ -88,6 +95,14 @@ func (r *Registry) SetOptOutHandler(fn shopOptOutFunc) {
 func (r *Registry) SetConfirmationHandler(fn shopConfirmationFunc) {
 	r.mu.Lock()
 	r.confirmation = fn
+	r.mu.Unlock()
+}
+
+// SetPollVoteHandler injects a callback that fires when a customer votes in a poll.
+// votedHashes are the SHA256 hashes of the selected option names.
+func (r *Registry) SetPollVoteHandler(fn shopPollVoteFunc) {
+	r.mu.Lock()
+	r.pollVote = fn
 	r.mu.Unlock()
 }
 
