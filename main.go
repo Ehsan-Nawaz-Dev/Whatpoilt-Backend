@@ -181,6 +181,12 @@ func main() {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
+			// Log token prefix so we can verify it's a fresh offline token
+			prefix := req.AccessToken
+			if len(prefix) > 10 {
+				prefix = prefix[:10] + "…"
+			}
+			slog.Info("register-shop token stored", "shop", req.ShopDomain, "token_prefix", prefix)
 			if err := db.SetShopToken(req.ShopDomain, req.AccessToken); err != nil {
 				c.JSON(500, gin.H{"error": err.Error()})
 				return

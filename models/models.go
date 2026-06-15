@@ -283,7 +283,7 @@ type ShopifyLineItem struct {
 
 // ShopifyCheckout represents an abandoned cart / checkout.
 type ShopifyCheckout struct {
-	ID                   string          `json:"id"`
+	ID                   int64           `json:"id"` // Shopify sends as integer
 	TotalPrice           string          `json:"total_price"`
 	AbandonedCheckoutURL string          `json:"abandoned_checkout_url"`
 	Customer             ShopifyCustomer `json:"customer"`
