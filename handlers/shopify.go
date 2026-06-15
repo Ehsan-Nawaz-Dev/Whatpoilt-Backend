@@ -168,40 +168,55 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		h.db.DeletePendingConfirmation(shop, phone)
 	}
 
-	// positiveOption is the first option of the first active poll in this trigger's
-	// automations (e.g. "✅ Yes, that's me!" for the Order Confirmation poll).
-	// It becomes the trigger_option for any Post-Confirmation Reply stored this run —
-	// the pending confirmation is only sent if the customer votes for that exact option.
-	var positiveOption string
-
+	// Pass 1 — load every active template so we can find positiveOption regardless
+	// of the order automations are returned from the DB.
+	type loadedAuto struct {
+		auto models.Automation
+		tmpl models.Template
+		msg  string // resolved + randomized content
+	}
+	items := make([]loadedAuto, 0, len(autos))
 	for _, auto := range autos {
 		tmpl, err := h.db.GetTemplate(auto.TemplateID, shop)
 		if err != nil || !tmpl.IsActive {
 			continue
 		}
-
 		resolved := resolveTemplate(tmpl.Content, vars)
 		final := whatsapp.RandomizeMessageForTrigger(resolved, trigger)
+		items = append(items, loadedAuto{auto, tmpl, final})
+	}
 
-		// Capture the first option of the first active poll we encounter —
-		// this is the "Yes / confirm" option that should gate the reply.
-		if positiveOption == "" && tmpl.MessageType == models.MessageTypePoll && len(tmpl.Options) > 0 {
-			positiveOption = tmpl.Options[0]
+	// positiveOption = first option of the first active poll in this batch.
+	// It is stored alongside the Post-Confirmation Reply so PopPendingConfirmation
+	// can verify the customer voted the correct option before sending it.
+	var positiveOption string
+	for _, la := range items {
+		if la.tmpl.MessageType == models.MessageTypePoll && len(la.tmpl.Options) > 0 {
+			positiveOption = la.tmpl.Options[0]
+			break
 		}
+	}
 
+	// Pass 2 — enqueue jobs or store the pending reply.
+	for _, la := range items {
 		// "Post-Confirmation Reply" is held back until the customer votes the
-		// positive option. Store it with the trigger so only a "Yes" vote fires it.
-		if auto.Name == "Post-Confirmation Reply" {
-			if err := h.db.StorePendingConfirmation(shop, phone, final,
-				string(tmpl.MessageType), tmpl.Options, positiveOption); err != nil {
+		// positive option. Only stored when we found a poll to gate it against.
+		if la.auto.Name == "Post-Confirmation Reply" {
+			if positiveOption == "" {
+				slog.Warn("skipping Post-Confirmation Reply — no active poll found to gate it",
+					"shop", shop)
+				continue
+			}
+			if err := h.db.StorePendingConfirmation(shop, phone, la.msg,
+				string(la.tmpl.MessageType), la.tmpl.Options, positiveOption); err != nil {
 				slog.Error("store pending confirmation", "shop", shop, "err", err)
 			}
 			continue
 		}
 
-		runAt := time.Now().Add(whatsapp.JitterDelay(auto.DelayMinutes))
-		if err := h.db.EnqueueJob(shop, auto.ID, tmpl.ID, phone, final,
-			tmpl.MessageType, tmpl.Options, runAt); err != nil {
+		runAt := time.Now().Add(whatsapp.JitterDelay(la.auto.DelayMinutes))
+		if err := h.db.EnqueueJob(shop, la.auto.ID, la.tmpl.ID, phone, la.msg,
+			la.tmpl.MessageType, la.tmpl.Options, runAt); err != nil {
 			slog.Error("enqueue job", "shop", shop, "err", err)
 		}
 	}

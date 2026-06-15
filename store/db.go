@@ -345,7 +345,8 @@ func (db *DB) ListAutomations(shop string) ([]models.Automation, error) {
 func (db *DB) GetAutomationsByTrigger(shop string, tt models.TriggerType) ([]models.Automation, error) {
 	rows, err := db.conn.Query(
 		`SELECT id,name,trigger_type,COALESCE(template_id,''),is_active,delay_minutes,created_at,updated_at
-		 FROM automations WHERE shop_domain=? AND trigger_type=? AND is_active=1`, shop, tt)
+		 FROM automations WHERE shop_domain=? AND trigger_type=? AND is_active=1
+		 ORDER BY created_at ASC`, shop, tt)
 	if err != nil {
 		return nil, err
 	}
