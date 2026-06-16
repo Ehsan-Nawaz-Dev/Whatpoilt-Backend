@@ -16,6 +16,9 @@ var defaultOrderTags = map[models.TriggerType]string{
 	models.TriggerOrderCreated:   "⏳ Pending Confirmation",
 	models.TriggerOrderFulfilled: "📦 Shipped - WA Notified",
 	models.TriggerOrderCancelled: "❌ Cancellation Sent",
+	models.TriggerCODOrder:       "💵 COD - Confirmation Sent",
+	models.TriggerPaymentPending: "⏳ Payment Pending",
+	models.TriggerRefundCreated:  "💙 Refund Notified",
 }
 
 // tagForTrigger reads the operator-configured tag from admin_config,

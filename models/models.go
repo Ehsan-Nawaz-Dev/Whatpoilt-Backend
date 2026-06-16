@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type TriggerType string
 
@@ -9,6 +12,9 @@ const (
 	TriggerOrderFulfilled TriggerType = "order_fulfilled"
 	TriggerAbandonedCart  TriggerType = "abandoned_cart"
 	TriggerOrderCancelled TriggerType = "order_cancelled"
+	TriggerCODOrder       TriggerType = "cod_order"       // cash-on-delivery confirmation poll
+	TriggerPaymentPending TriggerType = "payment_pending" // unpaid order payment nudge
+	TriggerRefundCreated  TriggerType = "refund_created"  // refund processed notification
 )
 
 type MessageStatus string
@@ -185,6 +191,38 @@ var DefaultTemplates = []Template{
 		IsActive:    true,
 		IsDefault:   true,
 	},
+	// ── COD Confirmation (2) ──────────────────────────────────────────────────
+	{
+		Name:        "COD Confirmation",
+		MessageType: MessageTypePoll,
+		Content:     "Hi <<name>>! 💵 Your cash-on-delivery order #<<order_number>> (<<total>>) is ready to dispatch.\n\nPlease confirm you'll be available to accept the delivery.",
+		Options:     []string{"✅ Yes, I'll accept delivery", "❌ No, please cancel my order", "📞 Call me first"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "COD Confirmation Reply",
+		MessageType: MessageTypeText,
+		Content:     "Great news, <<name>>! 🚚 Your COD order #<<order_number>> is confirmed for dispatch.\n\nOur delivery team will contact you before arriving. Please keep <<total>> ready.\n\nThank you for shopping with us!",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Payment Pending (1) ───────────────────────────────────────────────────
+	{
+		Name:        "Payment Reminder",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>>! 💳 Your order #<<order_number>> worth <<total>> is awaiting payment.\n\nComplete your payment to confirm the order and we'll start processing it right away.\n\nIf you have any issues, just reply here and we'll help!",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Refund Created (1) ────────────────────────────────────────────────────
+	{
+		Name:        "Refund Status Update",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>>! 💙 Your refund of <<refund_amount>> for order #<<order_number>> has been successfully processed.\n\nPlease allow 5–7 business days for the amount to appear in your account, depending on your bank.\n\nWe hope to serve you again soon! 🙏",
+		IsActive:    true,
+		IsDefault:   true,
+	},
 }
 
 // Automation defines a rule that triggers WhatsApp messages based on Shopify events.
@@ -243,10 +281,46 @@ type ShopifyOrder struct {
 	TotalPrice      string            `json:"total_price"`
 	Currency        string            `json:"currency"`
 	Phone           string            `json:"phone"` // top-level order phone
+	PaymentGateway  string            `json:"payment_gateway"`  // e.g. "cash_on_delivery", "manual", "shopify_payments"
+	FinancialStatus string            `json:"financial_status"` // "pending", "paid", "unpaid", "refunded"
 	Customer        ShopifyCustomer   `json:"customer"`
 	ShippingAddress ShopifyAddress    `json:"shipping_address"`
 	BillingAddress  ShopifyAddress    `json:"billing_address"`
 	LineItems       []ShopifyLineItem `json:"line_items"`
+}
+
+// ShopifyRefund is the payload Shopify sends on the refunds/create webhook.
+type ShopifyRefund struct {
+	ID           int64                  `json:"id"`
+	OrderID      int64                  `json:"order_id"`
+	Note         string                 `json:"note"`
+	Transactions []ShopifyTransaction   `json:"transactions"`
+}
+
+type ShopifyTransaction struct {
+	Amount   string `json:"amount"`
+	Currency string `json:"currency"`
+	Status   string `json:"status"` // "success", "pending", "failure"
+}
+
+// TotalRefunded returns the sum of successful transaction amounts as a formatted string.
+func (r *ShopifyRefund) TotalRefunded() string {
+	var total float64
+	currency := ""
+	for _, t := range r.Transactions {
+		if t.Status == "success" || t.Status == "" {
+			var amt float64
+			fmt.Sscanf(t.Amount, "%f", &amt)
+			total += amt
+			if currency == "" {
+				currency = t.Currency
+			}
+		}
+	}
+	if currency != "" {
+		return fmt.Sprintf("%.2f %s", total, currency)
+	}
+	return fmt.Sprintf("%.2f", total)
 }
 
 // ResolvePhone returns the first non-empty phone from all possible locations.

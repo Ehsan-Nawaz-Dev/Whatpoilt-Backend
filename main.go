@@ -164,6 +164,7 @@ func main() {
 		hooks.POST("/orders/fulfilled", shopH.OrderFulfilled)
 		hooks.POST("/orders/cancelled", shopH.OrderCancelled)
 		hooks.POST("/checkouts/create", shopH.AbandonedCart)
+		hooks.POST("/refunds/create",   shopH.RefundCreated)
 	}
 
 	// ── Internal GDPR routes (called by frontend with API key) ────────────────

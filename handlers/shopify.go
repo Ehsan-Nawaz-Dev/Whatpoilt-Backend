@@ -45,7 +45,75 @@ func (h *ShopifyHandler) OrderCreated(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	h.processOrder(c, shopFromWebhook(c), models.TriggerOrderCreated, order)
+	shop := shopFromWebhook(c)
+
+	// Fire COD confirmation automations asynchronously when payment_gateway
+	// indicates cash-on-delivery (in addition to the standard order_created flow).
+	if isCODOrder(order.PaymentGateway) {
+		go h.processExtraOrderTrigger(shop, models.TriggerCODOrder, order)
+	}
+
+	// Fire payment-pending nudge when the order is unpaid and NOT a COD order
+	// (COD orders are inherently "pending" until delivery, so they're excluded).
+	if isPaymentPending(order.FinancialStatus, order.PaymentGateway) {
+		go h.processExtraOrderTrigger(shop, models.TriggerPaymentPending, order)
+	}
+
+	h.processOrder(c, shop, models.TriggerOrderCreated, order)
+}
+
+// POST /webhooks/refunds/create
+func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
+	body, ok := h.verifyAndRead(c)
+	if !ok {
+		return
+	}
+	shop := shopFromWebhook(c)
+
+	var refund models.ShopifyRefund
+	if err := json.Unmarshal(body, &refund); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	// The refund webhook doesn't include customer details — fetch the parent order.
+	token := h.db.GetShopToken(shop)
+	if token == "" {
+		slog.Warn("refund webhook: no access token for shop — cannot look up order", "shop", shop)
+		c.JSON(http.StatusOK, gin.H{"skipped": "no access token"})
+		return
+	}
+	order, err := fetchShopifyOrder(shop, token, refund.OrderID)
+	if err != nil {
+		slog.Error("refund webhook: fetch order failed", "shop", shop, "order_id", refund.OrderID, "err", err)
+		c.JSON(http.StatusOK, gin.H{"skipped": "could not fetch order"})
+		return
+	}
+
+	phone := order.ResolvePhone()
+	if phone == "" {
+		c.JSON(http.StatusOK, gin.H{"skipped": "no phone on order"})
+		return
+	}
+
+	autos, _ := h.db.GetAutomationsByTrigger(shop, models.TriggerRefundCreated)
+	if len(autos) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "no active automations"})
+		return
+	}
+
+	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
+	h.db.UpsertContact(shop, name, phone, fmt.Sprint(order.Customer.ID))
+
+	h.enqueueAutomations(shop, autos, phone, models.TriggerRefundCreated, map[string]string{
+		"name":          name,
+		"order_number":  fmt.Sprint(order.OrderNumber),
+		"total":         fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
+		"refund_amount": refund.TotalRefunded(),
+	})
+
+	go h.tagOrderAsync(shop, refund.OrderID, models.TriggerRefundCreated)
+	c.JSON(http.StatusOK, gin.H{"message": "queued"})
 }
 
 // POST /webhooks/orders/fulfilled
@@ -199,12 +267,12 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 
 	// Pass 2 — enqueue jobs or store the pending reply.
 	for _, la := range items {
-		// "Post-Confirmation Reply" is held back until the customer votes the
-		// positive option. Only stored when we found a poll to gate it against.
-		if la.auto.Name == "Post-Confirmation Reply" {
+		// Any automation whose name ends in "Post-Confirmation Reply" is held back
+		// until the customer votes the positive option in the accompanying poll.
+		if isPostConfirmationReply(la.auto.Name) {
 			if positiveOption == "" {
-				slog.Warn("skipping Post-Confirmation Reply — no active poll found to gate it",
-					"shop", shop)
+				slog.Warn("skipping pending-confirmation automation — no active poll found",
+					"shop", shop, "automation", la.auto.Name)
 				continue
 			}
 			if err := h.db.StorePendingConfirmation(shop, phone, la.msg,
@@ -235,6 +303,75 @@ func (h *ShopifyHandler) verifyAndRead(c *gin.Context) ([]byte, bool) {
 		return nil, false
 	}
 	return body, true
+}
+
+// processExtraOrderTrigger fires additional automations for a COD or payment-pending
+// order without touching the HTTP context (always called in a goroutine).
+func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.TriggerType, order models.ShopifyOrder) {
+	phone := order.ResolvePhone()
+	if phone == "" {
+		return
+	}
+	autos, _ := h.db.GetAutomationsByTrigger(shop, trigger)
+	if len(autos) == 0 {
+		return
+	}
+	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
+	h.db.UpsertContact(shop, name, phone, fmt.Sprint(order.Customer.ID))
+	h.enqueueAutomations(shop, autos, phone, trigger, map[string]string{
+		"name":         name,
+		"order_number": fmt.Sprint(order.OrderNumber),
+		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
+	})
+	h.tagOrderAsync(shop, order.ID, trigger)
+}
+
+// isPostConfirmationReply returns true for automations that should be held as a
+// pending confirmation rather than sent immediately with the regular job queue.
+func isPostConfirmationReply(name string) bool {
+	return strings.HasSuffix(name, "Post-Confirmation Reply")
+}
+
+// isCODOrder returns true for payment gateways that represent cash-on-delivery.
+func isCODOrder(gateway string) bool {
+	g := strings.ToLower(strings.TrimSpace(gateway))
+	return g == "cash_on_delivery" || g == "cod" || g == "manual" ||
+		strings.Contains(g, "cash on delivery") || strings.Contains(g, "cash-on-delivery")
+}
+
+// isPaymentPending returns true for orders with pending/unpaid status that are NOT COD
+// (COD orders are always "pending" until physical delivery, so they use TriggerCODOrder).
+func isPaymentPending(financialStatus, gateway string) bool {
+	s := strings.ToLower(strings.TrimSpace(financialStatus))
+	return (s == "pending" || s == "unpaid") && !isCODOrder(gateway)
+}
+
+// fetchShopifyOrder retrieves a single order from the Shopify REST Admin API.
+// Used by the refund webhook to obtain customer contact details.
+func fetchShopifyOrder(shop, token string, orderID int64) (*models.ShopifyOrder, error) {
+	url := fmt.Sprintf("https://%s/admin/api/2026-01/orders/%d.json?fields=id,order_number,total_price,currency,phone,customer,shipping_address,billing_address", shop, orderID)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Shopify-Access-Token", token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("shopify API returned %d for order %d", resp.StatusCode, orderID)
+	}
+	var result struct {
+		Order models.ShopifyOrder `json:"order"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result.Order, nil
 }
 
 func verifyShopifyHMAC(body []byte, sig, secret string) bool {

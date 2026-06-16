@@ -433,6 +433,13 @@ var defaultAutomationDefs = []struct {
 	{"Abandoned Cart Recovery",     models.TriggerAbandonedCart,  "Abandoned Cart Recovery"},
 	{"Cart Save Reminder",          models.TriggerAbandonedCart,  "Cart Save Reminder"},
 	{"Cart Discount Offer",         models.TriggerAbandonedCart,  "Cart Discount Offer"},
+	// COD Order (2)
+	{"COD Delivery Confirmation",   models.TriggerCODOrder,       "COD Confirmation"},
+	{"COD Post-Confirmation Reply", models.TriggerCODOrder,       "COD Confirmation Reply"},
+	// Payment Pending (1)
+	{"Payment Reminder",            models.TriggerPaymentPending, "Payment Reminder"},
+	// Refund Created (1)
+	{"Refund Status Update",        models.TriggerRefundCreated,  "Refund Status Update"},
 }
 
 // SeedAutomations creates the 9 default automations for a shop if they don't exist.
@@ -462,13 +469,13 @@ func (db *DB) SeedAutomations(shop string) error {
 	return nil
 }
 
-// DefaultAutomationsSeeded returns true when the shop has all 18 automation rows.
+// DefaultAutomationsSeeded returns true when the shop has all default automation rows.
 func (db *DB) DefaultAutomationsSeeded(shop string) bool {
 	var count int
 	db.conn.QueryRow(
 		`SELECT COUNT(*) FROM automations WHERE shop_domain=?`, shop,
 	).Scan(&count)
-	return count >= 18
+	return count >= len(defaultAutomationDefs)
 }
 
 // ─── Contacts ────────────────────────────────────────────────────────────────
