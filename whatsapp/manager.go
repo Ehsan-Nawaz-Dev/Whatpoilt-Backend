@@ -51,6 +51,10 @@ type ConfirmationFunc func(phone string)
 // the SHA256 hashes of the selected option names (from DecryptPollVote).
 type PollVoteFunc func(phone string, votedHashes [][]byte)
 
+// KeywordReplyFunc is called with the customer's text so the caller can look up
+// and send a matching keyword auto-reply. Returns true if a reply was sent.
+type KeywordReplyFunc func(phone, text string) bool
+
 // Manager wraps a single shop's whatsmeow client.
 type Manager struct {
 	mu          sync.RWMutex
@@ -61,13 +65,15 @@ type Manager struct {
 
 	pairingMu sync.Mutex // prevents two goroutines starting QR flow simultaneously
 
-	onOptOut       OptOutFunc       // injected by registry
-	onConfirmation ConfirmationFunc // injected by registry (text messages)
-	onPollVote     PollVoteFunc     // injected by registry (poll votes)
+	onOptOut        OptOutFunc        // injected by registry
+	onConfirmation  ConfirmationFunc  // injected by registry (text messages)
+	onPollVote      PollVoteFunc      // injected by registry (poll votes)
+	onKeywordReply  KeywordReplyFunc  // injected by registry (keyword auto-reply)
 }
 
-func (m *Manager) SetConfirmationHandler(fn ConfirmationFunc) { m.onConfirmation = fn }
-func (m *Manager) SetPollVoteHandler(fn PollVoteFunc)         { m.onPollVote = fn }
+func (m *Manager) SetConfirmationHandler(fn ConfirmationFunc)   { m.onConfirmation = fn }
+func (m *Manager) SetPollVoteHandler(fn PollVoteFunc)           { m.onPollVote = fn }
+func (m *Manager) SetKeywordReplyHandler(fn KeywordReplyFunc)   { m.onKeywordReply = fn }
 
 var optOutKeywords = regexp.MustCompile(`(?i)^(stop|unsubscribe|opt.?out|no|cancel|0|quit|end)$`)
 
@@ -445,6 +451,14 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 			slog.Info("opt-out received", "phone", phone)
 			m.onOptOut(phone)
 			break
+		}
+
+		// Keyword auto-reply: if a reply was sent, skip the confirmation check so
+		// we don't inadvertently fire a pending confirmation for an unrelated keyword.
+		if text != "" && m.onKeywordReply != nil {
+			if m.onKeywordReply(phone, text) {
+				break
+			}
 		}
 
 		// Text-message confirmation: only fires when there is no trigger_option

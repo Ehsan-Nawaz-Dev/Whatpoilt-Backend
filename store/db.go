@@ -148,12 +148,23 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(shop_domain, phone))`,
 
+		// ── keyword auto-reply rules ─────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS keyword_replies (
+			id TEXT PRIMARY KEY,
+			shop_domain TEXT NOT NULL,
+			keyword TEXT NOT NULL,
+			reply_message TEXT NOT NULL,
+			is_active INTEGER DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(shop_domain, keyword))`,
+
 		// ── indexes — every query filters by shop_domain ───────────────────
 		`CREATE INDEX IF NOT EXISTS idx_templates_shop   ON templates(shop_domain)`,
 		`CREATE INDEX IF NOT EXISTS idx_automations_shop ON automations(shop_domain, trigger_type, is_active)`,
 		`CREATE INDEX IF NOT EXISTS idx_contacts_shop    ON contacts(shop_domain)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_shop        ON message_logs(shop_domain, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_jobs_ready       ON pending_jobs(status, scheduled_at) WHERE status='pending'`,
+		`CREATE INDEX IF NOT EXISTS idx_keywords_shop    ON keyword_replies(shop_domain)`,
 
 		// ── idempotent column additions for pre-existing DBs ─────────────────
 		`ALTER TABLE templates    ADD COLUMN shop_domain TEXT NOT NULL DEFAULT ''`,
@@ -163,9 +174,15 @@ func (db *DB) migrate() error {
 		`ALTER TABLE automations  ADD COLUMN shop_domain TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE message_logs ADD COLUMN shop_domain TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE contacts     ADD COLUMN opted_out INTEGER DEFAULT 0`,
+		`ALTER TABLE contacts     ADD COLUMN last_order_at DATETIME`,
+		`ALTER TABLE contacts     ADD COLUMN opted_out_at DATETIME`,
 		`ALTER TABLE pending_jobs ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'`,
 		`ALTER TABLE pending_jobs ADD COLUMN options TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE pending_confirmations ADD COLUMN trigger_option TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN frequency_cap_per_day INTEGER DEFAULT 0`,
+		`ALTER TABLE settings ADD COLUMN sending_window_start INTEGER DEFAULT -1`,
+		`ALTER TABLE settings ADD COLUMN sending_window_end INTEGER DEFAULT -1`,
+		`ALTER TABLE settings ADD COLUMN win_back_inactive_days INTEGER DEFAULT 0`,
 	}
 
 	for _, s := range stmts {
@@ -405,44 +422,53 @@ func (db *DB) UpdateAutomationTemplate(id, shop, templateID string) error {
 	return err
 }
 
-// defaultAutomationDefs are the 18 built-in automations seeded for every shop.
+// defaultAutomationDefs are the built-in automations seeded for every shop.
+// DelayMinutes is the default delay; merchants can change it via the dashboard.
 var defaultAutomationDefs = []struct {
 	Name         string
 	TriggerType  models.TriggerType
 	TemplateName string
+	DelayMinutes int
 }{
-	// Order Created (5)
-	{"Customer Order Confirmation", models.TriggerOrderCreated,   "Order Confirmation"},
-	{"Order Processing Update",     models.TriggerOrderCreated,   "Order Processing"},
-	{"Quick Order Thanks",          models.TriggerOrderCreated,   "Quick Order Thanks"},
-	{"Post-Confirmation Reply",     models.TriggerOrderCreated,   "Post-Confirmation Reply"},
-	{"Admin New Order Alert",       models.TriggerOrderCreated,   "Admin Order Alert"},
-	// Order Fulfilled (5)
-	{"Shipping Notification",       models.TriggerOrderFulfilled, "Shipping Alert"},
-	{"Shipping Confirmation",       models.TriggerOrderFulfilled, "Shipping Confirmation"},
-	{"Delivery Confirmation",       models.TriggerOrderFulfilled, "Delivery Alert"},
-	{"Post-Purchase Review",        models.TriggerOrderFulfilled, "Post-Purchase Review"},
-	{"Admin Order Confirmed Alert", models.TriggerOrderFulfilled, "Admin Order Confirmed Alert"},
+	// Order Created (6)
+	{"Customer Order Confirmation", models.TriggerOrderCreated,   "Order Confirmation",  0},
+	{"Order Processing Update",     models.TriggerOrderCreated,   "Order Processing",    0},
+	{"Quick Order Thanks",          models.TriggerOrderCreated,   "Quick Order Thanks",  0},
+	{"Post-Confirmation Reply",     models.TriggerOrderCreated,   "Post-Confirmation Reply", 0},
+	{"Admin New Order Alert",       models.TriggerOrderCreated,   "Admin Order Alert",   0},
+	{"Upsell After Purchase",       models.TriggerOrderCreated,   "Upsell Offer",        1440}, // 24 h
+	// Order Fulfilled (7)
+	{"Shipping Notification",       models.TriggerOrderFulfilled, "Shipping Alert",               0},
+	{"Shipping Confirmation",       models.TriggerOrderFulfilled, "Shipping Confirmation",        0},
+	{"Delivery Confirmation",       models.TriggerOrderFulfilled, "Delivery Alert",               0},
+	{"Post-Purchase Review",        models.TriggerOrderFulfilled, "Post-Purchase Review",         0},
+	{"Admin Order Confirmed Alert", models.TriggerOrderFulfilled, "Admin Order Confirmed Alert",  0},
+	{"Review Request",              models.TriggerOrderFulfilled, "Review Request",               4320}, // 3 days
+	{"Delivery Follow-Up",         models.TriggerOrderFulfilled, "Delivery Follow-Up",           7200}, // 5 days
 	// Order Cancelled (5)
-	{"Cancellation Verification",   models.TriggerOrderCancelled, "Cancellation Verification"},
-	{"Cancellation Notice",         models.TriggerOrderCancelled, "Order Cancellation"},
-	{"Refund Initiated",            models.TriggerOrderCancelled, "Refund Initiated"},
-	{"Win-Back Offer",              models.TriggerOrderCancelled, "Win-Back Offer"},
-	{"Admin Cancellation Alert",    models.TriggerOrderCancelled, "Admin Cancellation Alert"},
+	{"Cancellation Verification",   models.TriggerOrderCancelled, "Cancellation Verification", 0},
+	{"Cancellation Notice",         models.TriggerOrderCancelled, "Order Cancellation",        0},
+	{"Refund Initiated",            models.TriggerOrderCancelled, "Refund Initiated",          0},
+	{"Win-Back Offer",              models.TriggerOrderCancelled, "Win-Back Offer",            0},
+	{"Admin Cancellation Alert",    models.TriggerOrderCancelled, "Admin Cancellation Alert",  0},
 	// Abandoned Cart (3)
-	{"Abandoned Cart Recovery",     models.TriggerAbandonedCart,  "Abandoned Cart Recovery"},
-	{"Cart Save Reminder",          models.TriggerAbandonedCart,  "Cart Save Reminder"},
-	{"Cart Discount Offer",         models.TriggerAbandonedCart,  "Cart Discount Offer"},
+	{"Abandoned Cart Recovery",     models.TriggerAbandonedCart,  "Abandoned Cart Recovery", 0},
+	{"Cart Save Reminder",          models.TriggerAbandonedCart,  "Cart Save Reminder",      0},
+	{"Cart Discount Offer",         models.TriggerAbandonedCart,  "Cart Discount Offer",     0},
 	// COD Order (2)
-	{"COD Delivery Confirmation",   models.TriggerCODOrder,       "COD Confirmation"},
-	{"COD Post-Confirmation Reply", models.TriggerCODOrder,       "COD Confirmation Reply"},
+	{"COD Delivery Confirmation",   models.TriggerCODOrder,       "COD Confirmation",       0},
+	{"COD Post-Confirmation Reply", models.TriggerCODOrder,       "COD Confirmation Reply", 0},
 	// Payment Pending (1)
-	{"Payment Reminder",            models.TriggerPaymentPending, "Payment Reminder"},
+	{"Payment Reminder",            models.TriggerPaymentPending, "Payment Reminder",        0},
 	// Refund Created (1)
-	{"Refund Status Update",        models.TriggerRefundCreated,  "Refund Status Update"},
+	{"Refund Status Update",        models.TriggerRefundCreated,  "Refund Status Update",    0},
+	// Welcome (1)
+	{"Welcome Series",              models.TriggerWelcome,        "Welcome Message",         0},
+	// Win-Back (1)
+	{"Win-Back Campaign",           models.TriggerWinBack,        "Win-Back Message",        0},
 }
 
-// SeedAutomations creates the 9 default automations for a shop if they don't exist.
+// SeedAutomations creates default automations for a shop if they don't exist.
 // Templates must already be seeded before calling this.
 func (db *DB) SeedAutomations(shop string) error {
 	for _, def := range defaultAutomationDefs {
@@ -462,8 +488,8 @@ func (db *DB) SeedAutomations(shop string) error {
 		db.conn.Exec(
 			`INSERT INTO automations
 			 (id,shop_domain,name,trigger_type,template_id,is_active,delay_minutes,created_at,updated_at)
-			 VALUES(?,?,?,?,?,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
-			uuid.NewString(), shop, def.Name, string(def.TriggerType), templateID,
+			 VALUES(?,?,?,?,?,0,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+			uuid.NewString(), shop, def.Name, string(def.TriggerType), templateID, def.DelayMinutes,
 		)
 	}
 	return nil
@@ -525,8 +551,16 @@ func (db *DB) SetContactOptOut(shop, phone string, out bool) error {
 	if out {
 		v = 1
 	}
-	_, err := db.conn.Exec(
-		`UPDATE contacts SET opted_out=? WHERE shop_domain=? AND phone=?`, v, shop, phone)
+	var err error
+	if out {
+		_, err = db.conn.Exec(
+			`UPDATE contacts SET opted_out=?,opted_out_at=CURRENT_TIMESTAMP WHERE shop_domain=? AND phone=?`,
+			v, shop, phone)
+	} else {
+		_, err = db.conn.Exec(
+			`UPDATE contacts SET opted_out=?,opted_out_at=NULL WHERE shop_domain=? AND phone=?`,
+			v, shop, phone)
+	}
 	return err
 }
 
@@ -664,6 +698,8 @@ var defaultSettings = models.Settings{
 	TypingSimulationEnabled: true, TypingSpeedCPM: 220,
 	MinTypingSeconds: 2, MaxTypingSeconds: 14,
 	ReadDelayMinSeconds: 1, ReadDelayMaxSeconds: 5,
+	FrequencyCapPerDay: 0, SendingWindowStart: -1, SendingWindowEnd: -1,
+	WinBackInactiveDays: 0,
 }
 
 func (db *DB) GetSettings(shop string) (models.Settings, error) {
@@ -672,11 +708,17 @@ func (db *DB) GetSettings(shop string) (models.Settings, error) {
 	err := db.conn.QueryRow(
 		`SELECT typing_simulation_enabled,typing_speed_cpm,
 		        min_typing_seconds,max_typing_seconds,
-		        read_delay_min_seconds,read_delay_max_seconds
+		        read_delay_min_seconds,read_delay_max_seconds,
+		        COALESCE(frequency_cap_per_day,0),
+		        COALESCE(sending_window_start,-1),
+		        COALESCE(sending_window_end,-1),
+		        COALESCE(win_back_inactive_days,0)
 		 FROM settings WHERE shop_domain=?`, shop).
 		Scan(&enabled, &s.TypingSpeedCPM,
 			&s.MinTypingSeconds, &s.MaxTypingSeconds,
-			&s.ReadDelayMinSeconds, &s.ReadDelayMaxSeconds)
+			&s.ReadDelayMinSeconds, &s.ReadDelayMaxSeconds,
+			&s.FrequencyCapPerDay, &s.SendingWindowStart, &s.SendingWindowEnd,
+			&s.WinBackInactiveDays)
 	if err == sql.ErrNoRows {
 		return defaultSettings, nil
 	}
@@ -691,8 +733,10 @@ func (db *DB) SaveSettings(shop string, s models.Settings) error {
 	}
 	_, err := db.conn.Exec(
 		`INSERT INTO settings(shop_domain,typing_simulation_enabled,typing_speed_cpm,
-		  min_typing_seconds,max_typing_seconds,read_delay_min_seconds,read_delay_max_seconds,updated_at)
-		 VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+		  min_typing_seconds,max_typing_seconds,read_delay_min_seconds,read_delay_max_seconds,
+		  frequency_cap_per_day,sending_window_start,sending_window_end,win_back_inactive_days,
+		  updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 		 ON CONFLICT(shop_domain) DO UPDATE SET
 		  typing_simulation_enabled=excluded.typing_simulation_enabled,
 		  typing_speed_cpm=excluded.typing_speed_cpm,
@@ -700,10 +744,228 @@ func (db *DB) SaveSettings(shop string, s models.Settings) error {
 		  max_typing_seconds=excluded.max_typing_seconds,
 		  read_delay_min_seconds=excluded.read_delay_min_seconds,
 		  read_delay_max_seconds=excluded.read_delay_max_seconds,
+		  frequency_cap_per_day=excluded.frequency_cap_per_day,
+		  sending_window_start=excluded.sending_window_start,
+		  sending_window_end=excluded.sending_window_end,
+		  win_back_inactive_days=excluded.win_back_inactive_days,
 		  updated_at=CURRENT_TIMESTAMP`,
 		shop, v, s.TypingSpeedCPM, s.MinTypingSeconds, s.MaxTypingSeconds,
-		s.ReadDelayMinSeconds, s.ReadDelayMaxSeconds)
+		s.ReadDelayMinSeconds, s.ReadDelayMaxSeconds,
+		s.FrequencyCapPerDay, s.SendingWindowStart, s.SendingWindowEnd,
+		s.WinBackInactiveDays)
 	return err
+}
+
+// ─── Frequency cap ────────────────────────────────────────────────────────────
+
+// MessageCountToday returns how many messages were successfully sent to a phone today.
+func (db *DB) MessageCountToday(shop, phone string) int {
+	var n int
+	db.conn.QueryRow(
+		`SELECT COUNT(*) FROM message_logs
+		 WHERE shop_domain=? AND contact_phone=? AND status='sent'
+		 AND DATE(created_at)=DATE('now')`, shop, phone).Scan(&n)
+	return n
+}
+
+// RescheduleJob defers a job to a specific time (used for time-of-day windowing).
+func (db *DB) RescheduleJob(id string, at time.Time) {
+	db.conn.Exec(
+		`UPDATE pending_jobs SET scheduled_at=?,status='pending',updated_at=? WHERE id=?`,
+		at, time.Now(), id)
+}
+
+// ─── Keyword auto-replies ─────────────────────────────────────────────────────
+
+func (db *DB) ListKeywordReplies(shop string) ([]models.KeywordReply, error) {
+	rows, err := db.conn.Query(
+		`SELECT id,keyword,reply_message,is_active,created_at
+		 FROM keyword_replies WHERE shop_domain=? ORDER BY keyword ASC`, shop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.KeywordReply
+	for rows.Next() {
+		var k models.KeywordReply
+		var active int
+		if err := rows.Scan(&k.ID, &k.Keyword, &k.ReplyMessage, &active, &k.CreatedAt); err != nil {
+			continue
+		}
+		k.IsActive = active == 1
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+func (db *DB) GetKeywordReply(shop, text string) string {
+	var reply string
+	db.conn.QueryRow(
+		`SELECT reply_message FROM keyword_replies
+		 WHERE shop_domain=? AND LOWER(keyword)=LOWER(?) AND is_active=1
+		 LIMIT 1`, shop, strings.TrimSpace(text)).Scan(&reply)
+	return reply
+}
+
+func (db *DB) SaveKeywordReply(shop string, k models.KeywordReply) error {
+	active := 0
+	if k.IsActive {
+		active = 1
+	}
+	id := k.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	_, err := db.conn.Exec(
+		`INSERT INTO keyword_replies(id,shop_domain,keyword,reply_message,is_active,created_at)
+		 VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+		 ON CONFLICT(id) DO UPDATE SET
+		  keyword=excluded.keyword,
+		  reply_message=excluded.reply_message,
+		  is_active=excluded.is_active`,
+		id, shop, k.Keyword, k.ReplyMessage, active)
+	return err
+}
+
+func (db *DB) DeleteKeywordReply(shop, id string) error {
+	_, err := db.conn.Exec(
+		`DELETE FROM keyword_replies WHERE id=? AND shop_domain=?`, id, shop)
+	return err
+}
+
+// ─── Win-back ─────────────────────────────────────────────────────────────────
+
+// WinBackCandidates returns non-opted-out contacts whose last order was more than
+// inactiveDays ago AND who have never had a win-back job enqueued today.
+func (db *DB) WinBackCandidates(shop string, inactiveDays int) []models.Contact {
+	rows, err := db.conn.Query(
+		`SELECT c.id,COALESCE(c.name,''),c.phone,COALESCE(c.shopify_customer_id,''),c.opted_out,c.created_at
+		 FROM contacts c
+		 WHERE c.shop_domain=? AND c.opted_out=0
+		   AND c.last_order_at IS NOT NULL
+		   AND c.last_order_at < datetime('now',?)
+		   AND NOT EXISTS (
+		     SELECT 1 FROM pending_jobs j
+		     WHERE j.shop_domain=? AND j.phone=c.phone
+		       AND j.automation_id IN (
+		         SELECT id FROM automations WHERE shop_domain=? AND trigger_type='win_back'
+		       )
+		       AND DATE(j.created_at)=DATE('now')
+		   )
+		 LIMIT 100`,
+		shop, fmt.Sprintf("-%d days", inactiveDays), shop, shop)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []models.Contact
+	for rows.Next() {
+		var c models.Contact
+		var optedOut int
+		rows.Scan(&c.ID, &c.Name, &c.Phone, &c.ShopifyCustomerID, &optedOut, &c.CreatedAt)
+		c.OptedOut = optedOut == 1
+		out = append(out, c)
+	}
+	return out
+}
+
+// UpdateLastOrderAt stamps the contact's last_order_at when an order is placed.
+func (db *DB) UpdateLastOrderAt(shop, phone string) {
+	db.conn.Exec(
+		`UPDATE contacts SET last_order_at=CURRENT_TIMESTAMP WHERE shop_domain=? AND phone=?`,
+		shop, normalizePhone(phone))
+}
+
+// ─── Broadcast ────────────────────────────────────────────────────────────────
+
+// AllActiveContacts returns every non-opted-out contact for a shop.
+func (db *DB) AllActiveContacts(shop string) ([]models.Contact, error) {
+	rows, err := db.conn.Query(
+		`SELECT id,COALESCE(name,''),phone,COALESCE(shopify_customer_id,''),opted_out,created_at
+		 FROM contacts WHERE shop_domain=? AND opted_out=0 ORDER BY created_at ASC`, shop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Contact
+	for rows.Next() {
+		var c models.Contact
+		var optedOut int
+		rows.Scan(&c.ID, &c.Name, &c.Phone, &c.ShopifyCustomerID, &optedOut, &c.CreatedAt)
+		c.OptedOut = optedOut == 1
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// ─── Revenue attribution ──────────────────────────────────────────────────────
+
+// WASentRecently returns true if a WhatsApp message was successfully sent to phone
+// within the given number of hours.
+func (db *DB) WASentRecently(shop, phone string, hours int) bool {
+	phone = normalizePhone(phone)
+	var count int
+	db.conn.QueryRow(
+		`SELECT COUNT(*) FROM message_logs
+		 WHERE shop_domain=? AND contact_phone=? AND status='sent'
+		 AND created_at >= datetime('now',?)`,
+		shop, phone, fmt.Sprintf("-%d hours", hours)).Scan(&count)
+	return count > 0
+}
+
+// ─── Opt-out trends ───────────────────────────────────────────────────────────
+
+// OptOutTrends returns daily opt-out counts over the last `days` days.
+func (db *DB) OptOutTrends(shop string, days int) []models.OptOutStat {
+	rows, err := db.conn.Query(
+		`SELECT DATE(opted_out_at) as d, COUNT(*) as n
+		 FROM contacts
+		 WHERE shop_domain=? AND opted_out=1
+		   AND opted_out_at >= datetime('now',?)
+		 GROUP BY d ORDER BY d ASC`,
+		shop, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []models.OptOutStat
+	for rows.Next() {
+		var s models.OptOutStat
+		rows.Scan(&s.Date, &s.Count)
+		out = append(out, s)
+	}
+	return out
+}
+
+// AllShops returns the list of distinct shop_domain values that have settings rows.
+func (db *DB) AllShops() []string {
+	rows, _ := db.conn.Query(`SELECT shop_domain FROM settings`)
+	if rows == nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		rows.Scan(&s)
+		out = append(out, s)
+	}
+	return out
+}
+
+// UpsertContactNew is like UpsertContact but returns true when the contact is brand new.
+func (db *DB) UpsertContactNew(shop, name, phone, shopifyID string) bool {
+	phone = normalizePhone(phone)
+	var count int
+	db.conn.QueryRow(`SELECT COUNT(*) FROM contacts WHERE shop_domain=? AND phone=?`, shop, phone).Scan(&count)
+	db.conn.Exec(
+		`INSERT INTO contacts(id,shop_domain,name,phone,shopify_customer_id,opted_out,created_at)
+		 VALUES(?,?,?,?,?,0,CURRENT_TIMESTAMP)
+		 ON CONFLICT(shop_domain,phone) DO UPDATE SET
+		  name=COALESCE(NULLIF(excluded.name,''),name),
+		  shopify_customer_id=COALESCE(NULLIF(excluded.shopify_customer_id,''),shopify_customer_id)`,
+		uuid.NewString(), shop, name, phone, shopifyID)
+	return count == 0
 }
 
 // ─── GDPR / Uninstall ─────────────────────────────────────────────────────────

@@ -15,6 +15,8 @@ const (
 	TriggerCODOrder       TriggerType = "cod_order"       // cash-on-delivery confirmation poll
 	TriggerPaymentPending TriggerType = "payment_pending" // unpaid order payment nudge
 	TriggerRefundCreated  TriggerType = "refund_created"  // refund processed notification
+	TriggerWelcome        TriggerType = "welcome"         // new contact first opt-in
+	TriggerWinBack        TriggerType = "win_back"        // inactive customer re-engagement
 )
 
 type MessageStatus string
@@ -220,6 +222,50 @@ var DefaultTemplates = []Template{
 		Name:        "Refund Status Update",
 		MessageType: MessageTypeText,
 		Content:     "Hi <<name>>! 💙 Your refund of <<refund_amount>> for order #<<order_number>> has been successfully processed.\n\nPlease allow 5–7 business days for the amount to appear in your account, depending on your bank.\n\nWe hope to serve you again soon! 🙏",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Upsell After Purchase (1) — uses TriggerOrderCreated with delay ────────
+	{
+		Name:        "Upsell Offer",
+		MessageType: MessageTypeButtons,
+		Content:     "Hi <<name>>! 🛍️ We hope you're excited about order #<<order_number>>!\n\nCustomers who bought this also loved these items. Would you like to explore?",
+		Options:     []string{"🛒 Shop More", "💬 Ask a Question"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Review Request (1) — uses TriggerOrderFulfilled with 3-day delay ────────
+	{
+		Name:        "Review Request",
+		MessageType: MessageTypePoll,
+		Content:     "Hi <<name>>! 🌟 Your order #<<order_number>> should have arrived by now.\n\nWe'd love to hear how your experience was. Would you mind sharing a quick rating?",
+		Options:     []string{"⭐⭐⭐⭐⭐ Excellent!", "⭐⭐⭐⭐ Great", "⭐⭐⭐ Average", "😕 Needs improvement"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Delivery Follow-Up (1) — uses TriggerOrderFulfilled with 5-day delay ────
+	{
+		Name:        "Delivery Follow-Up",
+		MessageType: MessageTypePoll,
+		Content:     "Hi <<name>>! 📦 We wanted to check in on order #<<order_number>>.\n\nDid your delivery arrive safely?",
+		Options:     []string{"✅ Yes, received!", "⏳ Still waiting", "❌ Not received", "📞 I need help"},
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Welcome Series (1) — fires on TriggerWelcome ──────────────────────────
+	{
+		Name:        "Welcome Message",
+		MessageType: MessageTypeText,
+		Content:     "👋 Welcome, <<name>>!\n\nThank you for connecting with us on WhatsApp. You'll receive order updates, exclusive offers, and support right here.\n\nReply *STOP* anytime to unsubscribe. 💙",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// ── Win-Back Campaign (1) — fires on TriggerWinBack ──────────────────────
+	{
+		Name:        "Win-Back Message",
+		MessageType: MessageTypeButtons,
+		Content:     "Hi <<name>>! 😊 We miss you!\n\nIt's been a while since your last order and we'd love to have you back. Here's something special just for you.",
+		Options:     []string{"🛍️ Shop Now", "💬 Chat with Us"},
 		IsActive:    true,
 		IsDefault:   true,
 	},
@@ -513,4 +559,32 @@ type Settings struct {
 	MaxTypingSeconds        int  `json:"max_typing_seconds"`
 	ReadDelayMinSeconds     int  `json:"read_delay_min_seconds"`
 	ReadDelayMaxSeconds     int  `json:"read_delay_max_seconds"`
+	// Sending controls
+	FrequencyCapPerDay int `json:"frequency_cap_per_day"` // max messages/day per customer (0 = unlimited)
+	SendingWindowStart int `json:"sending_window_start"`  // hour 0-23; -1 = no restriction
+	SendingWindowEnd   int `json:"sending_window_end"`    // hour 0-23; -1 = no restriction
+	// Win-back
+	WinBackInactiveDays int `json:"win_back_inactive_days"` // days of inactivity before win-back fires (0 = disabled)
+}
+
+// KeywordReply maps an incoming text keyword to an auto-reply message.
+type KeywordReply struct {
+	ID           string    `json:"id"`
+	Keyword      string    `json:"keyword"`      // case-insensitive match
+	ReplyMessage string    `json:"reply_message"`
+	IsActive     bool      `json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// BroadcastRequest is the body for the broadcast/campaign endpoint.
+type BroadcastRequest struct {
+	TemplateID    string `json:"template_id" binding:"required"`
+	DelayMinutes  int    `json:"delay_minutes"`   // stagger: each contact offset by this
+	FilterOptedIn bool   `json:"filter_opted_in"` // only send to explicitly opted-in contacts
+}
+
+// OptOutStat is one day's opt-out count for the trends chart.
+type OptOutStat struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
 }

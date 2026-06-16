@@ -103,7 +103,7 @@ func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
 	}
 
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
-	h.db.UpsertContact(shop, name, phone, fmt.Sprint(order.Customer.ID))
+	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
 
 	h.enqueueAutomations(shop, autos, phone, models.TriggerRefundCreated, map[string]string{
 		"name":          name,
@@ -175,7 +175,7 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 	}
 
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", checkout.Customer.FirstName, checkout.Customer.LastName))
-	h.db.UpsertContact(shop, name, phone, fmt.Sprint(checkout.Customer.ID))
+	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(checkout.Customer.ID))
 
 	h.enqueueAutomations(shop, automations, phone, models.TriggerAbandonedCart, map[string]string{
 		"name":     name,
@@ -203,7 +203,21 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 	}
 
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
-	h.db.UpsertContact(shop, name, phone, fmt.Sprint(order.Customer.ID))
+
+	// Welcome series: fire TriggerWelcome automations only for brand-new contacts.
+	isNew := h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
+	if isNew {
+		go h.processExtraOrderTrigger(shop, models.TriggerWelcome, order)
+	}
+
+	// Revenue attribution: tag order if we sent a WA message to this customer in
+	// the last 24 hours (indicating WA influenced the conversion).
+	if h.db.WASentRecently(shop, phone, 24) {
+		go h.tagOrderWithLabel(shop, order.ID, "🤝 WA Influenced")
+	}
+
+	// Stamp last_order_at so win-back can detect inactivity.
+	h.db.UpdateLastOrderAt(shop, phone)
 
 	h.enqueueAutomations(shop, automations, phone, trigger, map[string]string{
 		"name":         name,
@@ -215,6 +229,17 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 	go h.tagOrderAsync(shop, order.ID, trigger)
 
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
+}
+
+// tagOrderWithLabel adds a freeform string tag to a Shopify order (revenue attribution etc).
+func (h *ShopifyHandler) tagOrderWithLabel(shop string, orderID int64, tag string) {
+	token := h.db.GetShopToken(shop)
+	if token == "" {
+		return
+	}
+	if err := addShopifyOrderTag(shop, token, orderID, tag); err != nil {
+		slog.Error("revenue attribution tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)
+	}
 }
 
 // enqueueAutomations writes jobs to the persistent pending_jobs table.
@@ -317,7 +342,8 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 		return
 	}
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
-	h.db.UpsertContact(shop, name, phone, fmt.Sprint(order.Customer.ID))
+	// UpsertContactNew is idempotent — safe to call multiple times for the same order.
+	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
 	h.enqueueAutomations(shop, autos, phone, trigger, map[string]string{
 		"name":         name,
 		"order_number": fmt.Sprint(order.OrderNumber),
@@ -372,6 +398,15 @@ func fetchShopifyOrder(shop, token string, orderID int64) (*models.ShopifyOrder,
 		return nil, err
 	}
 	return &result.Order, nil
+}
+
+// EnqueueWinBack enqueues win-back automations for a single inactive contact.
+// Called from the main.go background goroutine.
+func (h *ShopifyHandler) EnqueueWinBack(shop string, autos []models.Automation, contact models.Contact) {
+	h.enqueueAutomations(shop, autos, contact.Phone, models.TriggerWinBack, map[string]string{
+		"name":  contact.Name,
+		"phone": contact.Phone,
+	})
 }
 
 func verifyShopifyHMAC(body []byte, sig, secret string) bool {

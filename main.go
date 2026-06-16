@@ -5,11 +5,13 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/whatpilot/backend/config"
 	"github.com/whatpilot/backend/handlers"
 	"github.com/whatpilot/backend/middleware"
+	"github.com/whatpilot/backend/models"
 	"github.com/whatpilot/backend/store"
 	"github.com/whatpilot/backend/whatsapp"
 	"github.com/whatpilot/backend/worker"
@@ -43,6 +45,24 @@ func main() {
 	registry.SetOptOutHandler(func(shop, phone string) {
 		db.SetContactOptOut(shop, phone, true)
 		slog.Info("contact opted out", "shop", shop, "phone", phone)
+	})
+	// Keyword auto-reply: look up the customer's text against keyword_replies table.
+	registry.SetKeywordReplyHandler(func(shop, phone, text string) bool {
+		reply := db.GetKeywordReply(shop, text)
+		if reply == "" {
+			return false
+		}
+		mgr, err := registry.For(shop)
+		if err != nil {
+			return false
+		}
+		cfg, _ := db.GetSettings(shop)
+		if sendErr := mgr.SendMessageWithTyping(phone, reply, cfg); sendErr != nil {
+			slog.Warn("keyword reply send failed", "shop", shop, "phone", phone, "err", sendErr)
+			return false
+		}
+		slog.Info("keyword auto-reply sent", "shop", shop, "phone", phone, "keyword", text)
+		return true
 	})
 	dispatchPendingReply := func(shop, phone string, pc *store.PendingConfirmation) {
 		mgr, err := registry.For(shop)
@@ -89,6 +109,39 @@ func main() {
 	defer cancel()
 	go wrk.Run(ctx)
 
+	// ── Win-back background job (runs once per day) ────────────────────────────
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				settings := db.AllShops()
+				for _, shop := range settings {
+					cfg, err := db.GetSettings(shop)
+					if err != nil || cfg.WinBackInactiveDays <= 0 {
+						continue
+					}
+					candidates := db.WinBackCandidates(shop, cfg.WinBackInactiveDays)
+					if len(candidates) == 0 {
+						continue
+					}
+					autos, _ := db.GetAutomationsByTrigger(shop, models.TriggerWinBack)
+					if len(autos) == 0 {
+						continue
+					}
+					shopH := handlers.NewShopifyHandler(registry, db)
+					for _, c := range candidates {
+						shopH.EnqueueWinBack(shop, autos, c)
+					}
+					slog.Info("win-back enqueued", "shop", shop, "candidates", len(candidates))
+				}
+			}
+		}
+	}()
+
 	// ── Gin router ────────────────────────────────────────────────────────────
 	if config.App.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -112,6 +165,8 @@ func main() {
 	anlH  := handlers.NewAnalyticsHandler(db)
 	admH  := handlers.NewAdminHandler(db, registry, config.App.DBPath)
 	sessH := handlers.NewSessionHandler(db)
+	kwdH  := handlers.NewKeywordHandler(db)
+	brdH  := handlers.NewBroadcastHandler(db, registry)
 
 	// ── Authenticated API routes (/api/*) ─────────────────────────────────────
 	// Every request must carry Authorization: Bearer <BACKEND_API_KEY>
@@ -155,6 +210,17 @@ func main() {
 
 		anlyt := api.Group("/analytics")
 		anlyt.GET("", anlH.Overview)
+		anlyt.GET("/optouts", anlH.OptOutTrends)
+		anlyt.GET("/revenue", anlH.RevenueAttribution)
+
+		kwd := api.Group("/keywords")
+		kwd.GET("",        kwdH.List)
+		kwd.POST("",       kwdH.Create)
+		kwd.PUT("/:id",    kwdH.Update)
+		kwd.DELETE("/:id", kwdH.Delete)
+
+		brd := api.Group("/broadcasts")
+		brd.POST("", brdH.Send)
 	}
 
 	// ── Shopify webhook routes (HMAC verified, no API key header) ─────────────

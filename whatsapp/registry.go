@@ -17,6 +17,7 @@ type Registry struct {
 	optOut       shopOptOutFunc
 	confirmation shopConfirmationFunc
 	pollVote     shopPollVoteFunc
+	keywordReply shopKeywordReplyFunc
 }
 
 func NewRegistry(sessDir string) (*Registry, error) {
@@ -66,6 +67,11 @@ func (r *Registry) For(shop string) (*Manager, error) {
 		shopCopy := shop
 		mgr.SetPollVoteHandler(func(phone string, hashes [][]byte) { r.pollVote(shopCopy, phone, hashes) })
 	}
+	// Wire keyword auto-reply callback.
+	if r.keywordReply != nil {
+		shopCopy := shop
+		mgr.SetKeywordReplyHandler(func(phone, text string) bool { return r.keywordReply(shopCopy, phone, text) })
+	}
 	r.stores[shop] = mgr
 	return mgr, nil
 }
@@ -83,6 +89,7 @@ func (r *Registry) Remove(shop string) {
 type shopOptOutFunc func(shop, phone string)
 type shopConfirmationFunc func(shop, phone string)
 type shopPollVoteFunc func(shop, phone string, votedHashes [][]byte)
+type shopKeywordReplyFunc func(shop, phone, text string) bool
 
 // SetOptOutHandler injects a callback that fires when a customer sends an opt-out
 // keyword. The registry forwards it into every manager it creates.
@@ -103,6 +110,14 @@ func (r *Registry) SetConfirmationHandler(fn shopConfirmationFunc) {
 func (r *Registry) SetPollVoteHandler(fn shopPollVoteFunc) {
 	r.mu.Lock()
 	r.pollVote = fn
+	r.mu.Unlock()
+}
+
+// SetKeywordReplyHandler injects a callback that fires on any incoming text message.
+// The callback should return true if it sent a keyword reply (suppresses further handling).
+func (r *Registry) SetKeywordReplyHandler(fn shopKeywordReplyFunc) {
+	r.mu.Lock()
+	r.keywordReply = fn
 	r.mu.Unlock()
 }
 
