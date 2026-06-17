@@ -392,6 +392,20 @@ func typingDuration(text string, cfg models.Settings, r *rand.Rand) time.Duratio
 	return time.Duration(seconds * float64(time.Second))
 }
 
+func (m *Manager) resolveJID(jid types.JID) types.JID {
+	if jid.Server == types.LIDServer {
+		m.mu.RLock()
+		client := m.client
+		m.mu.RUnlock()
+		if client != nil && client.Store != nil && client.Store.LIDs != nil {
+			if pnJID, err := client.Store.LIDs.GetPNForLID(jid); err == nil && !pnJID.IsEmpty() {
+				return pnJID
+			}
+		}
+	}
+	return jid
+}
+
 func (m *Manager) buildClient(deviceStore *waStore.Device) *whatsmeow.Client {
 	clientLog := waLog.Stdout("WA-Client", "ERROR", true)
 	client := whatsmeow.NewClient(deviceStore, clientLog)
@@ -420,7 +434,8 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 			// Chat.User is the customer's phone number in both directions of a 1:1 chat.
 			// Sender.User may be a WhatsApp LID (e.g. "68217166925845") in the newer
 			// multi-device protocol and is NOT suitable for DB lookups.
-			phone := v.Info.Chat.User
+			resolvedChat := m.resolveJID(v.Info.Chat)
+			phone := resolvedChat.User
 			slog.Info("poll vote event received", "phone", phone,
 				"sender", v.Info.Sender.User, "is_from_me", v.Info.IsFromMe)
 			if phone != "" && m.onPollVote != nil {
@@ -443,7 +458,8 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 		if v.Info.IsFromMe {
 			break // ignore messages we sent ourselves
 		}
-		phone := v.Info.Sender.User
+		resolvedSender := m.resolveJID(v.Info.Sender)
+		phone := resolvedSender.User
 		text := strings.TrimSpace(v.Message.GetConversation())
 
 		// Opt-out check
