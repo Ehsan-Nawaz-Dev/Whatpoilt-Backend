@@ -393,12 +393,12 @@ func typingDuration(text string, cfg models.Settings, r *rand.Rand) time.Duratio
 }
 
 func (m *Manager) resolveJID(jid types.JID) types.JID {
-	if jid.Server == types.LIDServer {
+	if jid.Server == "lid" {
 		m.mu.RLock()
 		client := m.client
 		m.mu.RUnlock()
 		if client != nil && client.Store != nil && client.Store.LIDs != nil {
-			if pnJID, err := client.Store.LIDs.GetPNForLID(jid); err == nil && !pnJID.IsEmpty() {
+			if pnJID, err := client.Store.LIDs.GetPNForLID(context.Background(), jid); err == nil && !pnJID.IsEmpty() {
 				return pnJID
 			}
 		}
