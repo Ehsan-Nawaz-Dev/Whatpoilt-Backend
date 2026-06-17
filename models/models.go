@@ -270,13 +270,6 @@ var DefaultTemplates = []Template{
 		IsDefault:   true,
 	},
 	{
-		Name:        "Order Cancellation Reply",
-		MessageType: MessageTypeText,
-		Content:     "We're sorry to hear that, <<name>>. 😔 We have flagged order #<<order_number>> for cancellation. Our team will contact you shortly to confirm.",
-		IsActive:    true,
-		IsDefault:   true,
-	},
-	{
 		Name:        "Customer Help Reply",
 		MessageType: MessageTypeText,
 		Content:     "Hello <<name>>! 💬 We have received your request for help regarding order #<<order_number>>. A support agent will contact you shortly.",

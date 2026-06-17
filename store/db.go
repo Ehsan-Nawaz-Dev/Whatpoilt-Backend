@@ -209,6 +209,10 @@ func (db *DB) migrate() error {
 		db.conn.Exec(s) // ignore "already exists" / "duplicate column" errors
 	}
 
+	// ── Delete Order Cancellation Reply template and automation if they exist
+	db.conn.Exec(`DELETE FROM templates WHERE name = 'Order Cancellation Reply'`)
+	db.conn.Exec(`DELETE FROM automations WHERE name = 'Order Cancellation Reply'`)
+
 	// ── Deduplicate templates ──────────────────────────────────────────────
 	type tempKey struct {
 		Shop string
@@ -565,7 +569,6 @@ var defaultAutomationDefs = []struct {
 	{"Order Processing Update",     models.TriggerOrderCreated,   "Order Processing",    0},
 	{"Quick Order Thanks",          models.TriggerOrderCreated,   "Quick Order Thanks",  0},
 	{"Post-Confirmation Reply",     models.TriggerOrderCreated,   "Post-Confirmation Reply", 0},
-	{"Order Cancellation Reply",    models.TriggerOrderCreated,   "Order Cancellation Reply", 0},
 	{"Customer Help Reply",         models.TriggerOrderCreated,   "Customer Help Reply", 0},
 	{"Admin New Order Alert",       models.TriggerOrderCreated,   "Admin Order Alert",   0},
 	{"Upsell After Purchase",       models.TriggerOrderCreated,   "Upsell Offer",        1440}, // 24 h

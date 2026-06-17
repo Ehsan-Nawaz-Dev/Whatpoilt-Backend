@@ -352,7 +352,7 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 
 			if trigger == models.TriggerOrderCreated {
 				noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
-				step2Yes, _, _ = h.resolveTemplateByName(shop, "Order Cancellation Reply", vars, trigger)
+				step2Yes, _, _ = h.resolveTemplateByName(shop, "Order Cancellation", vars, trigger)
 				step2No = yesMsg // If they choose "No, keep order", send the confirmation reply
 				step2Help, _, _ = h.resolveTemplateByName(shop, "Customer Help Reply", vars, trigger)
 			} else if trigger == models.TriggerCODOrder {
