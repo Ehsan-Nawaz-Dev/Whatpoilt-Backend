@@ -269,6 +269,34 @@ var DefaultTemplates = []Template{
 		IsActive:    true,
 		IsDefault:   true,
 	},
+	{
+		Name:        "Order Cancellation Reply",
+		MessageType: MessageTypeText,
+		Content:     "We're sorry to hear that, <<name>>. 😔 We have flagged order #<<order_number>> for cancellation. Our team will contact you shortly to confirm.",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "Customer Help Reply",
+		MessageType: MessageTypeText,
+		Content:     "Hello <<name>>! 💬 We have received your request for help regarding order #<<order_number>>. A support agent will contact you shortly.",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "COD Cancellation Reply",
+		MessageType: MessageTypeText,
+		Content:     "We're sorry to hear that, <<name>>. 😔 We have received your request to cancel COD order #<<order_number>>. It has been flagged for cancellation.",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	{
+		Name:        "COD Help Reply",
+		MessageType: MessageTypeText,
+		Content:     "Hello <<name>>! 💬 We have received your help request regarding COD order #<<order_number>>. A support agent will contact you shortly.",
+		IsActive:    true,
+		IsDefault:   true,
+	},
 }
 
 // Automation defines a rule that triggers WhatsApp messages based on Shopify events.

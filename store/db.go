@@ -1,4 +1,4 @@
-﻿package store
+package store
 
 import (
 	"bytes"
@@ -143,7 +143,15 @@ func (db *DB) migrate() error {
 			reply_no_message TEXT NOT NULL DEFAULT '',
 			reply_no_type TEXT NOT NULL DEFAULT 'text',
 			reply_no_options TEXT NOT NULL DEFAULT '[]',
+			reply_help_message TEXT NOT NULL DEFAULT '',
+			reply_help_type TEXT NOT NULL DEFAULT 'text',
+			reply_help_options TEXT NOT NULL DEFAULT '[]',
 			trigger_option TEXT NOT NULL DEFAULT '',
+			no_option TEXT NOT NULL DEFAULT '',
+			help_option TEXT NOT NULL DEFAULT '',
+			step2_yes_message TEXT NOT NULL DEFAULT '',
+			step2_no_message TEXT NOT NULL DEFAULT '',
+			step2_help_message TEXT NOT NULL DEFAULT '',
 			expires_at DATETIME NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(shop_domain, phone))`,
@@ -179,6 +187,17 @@ func (db *DB) migrate() error {
 		`ALTER TABLE pending_jobs ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'`,
 		`ALTER TABLE pending_jobs ADD COLUMN options TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE pending_confirmations ADD COLUMN trigger_option TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN reply_no_message TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN reply_no_type TEXT NOT NULL DEFAULT 'text'`,
+		`ALTER TABLE pending_confirmations ADD COLUMN reply_no_options TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE pending_confirmations ADD COLUMN reply_help_message TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN reply_help_type TEXT NOT NULL DEFAULT 'text'`,
+		`ALTER TABLE pending_confirmations ADD COLUMN reply_help_options TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE pending_confirmations ADD COLUMN no_option TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN help_option TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN step2_yes_message TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN step2_no_message TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN step2_help_message TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE settings ADD COLUMN frequency_cap_per_day INTEGER DEFAULT 0`,
 		`ALTER TABLE settings ADD COLUMN sending_window_start INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN sending_window_end INTEGER DEFAULT -1`,
@@ -255,6 +274,17 @@ func (db *DB) GetTemplate(id, shop string) (*models.Template, error) {
 	row := db.conn.QueryRow(
 		`SELECT id,name,content,message_type,options,is_active,is_default,created_at,updated_at
 		 FROM templates WHERE id=? AND shop_domain=?`, id, shop)
+	t, err := scanTemplateWithType(row)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (db *DB) GetTemplateByName(name, shop string) (*models.Template, error) {
+	row := db.conn.QueryRow(
+		`SELECT id,name,content,message_type,options,is_active,is_default,created_at,updated_at
+		 FROM templates WHERE name=? AND shop_domain=?`, name, shop)
 	t, err := scanTemplateWithType(row)
 	if err != nil {
 		return nil, err
@@ -435,6 +465,8 @@ var defaultAutomationDefs = []struct {
 	{"Order Processing Update",     models.TriggerOrderCreated,   "Order Processing",    0},
 	{"Quick Order Thanks",          models.TriggerOrderCreated,   "Quick Order Thanks",  0},
 	{"Post-Confirmation Reply",     models.TriggerOrderCreated,   "Post-Confirmation Reply", 0},
+	{"Order Cancellation Reply",    models.TriggerOrderCreated,   "Order Cancellation Reply", 0},
+	{"Customer Help Reply",         models.TriggerOrderCreated,   "Customer Help Reply", 0},
 	{"Admin New Order Alert",       models.TriggerOrderCreated,   "Admin Order Alert",   0},
 	{"Upsell After Purchase",       models.TriggerOrderCreated,   "Upsell Offer",        1440}, // 24 h
 	// Order Fulfilled (7)
@@ -455,9 +487,11 @@ var defaultAutomationDefs = []struct {
 	{"Abandoned Cart Recovery",     models.TriggerAbandonedCart,  "Abandoned Cart Recovery", 0},
 	{"Cart Save Reminder",          models.TriggerAbandonedCart,  "Cart Save Reminder",      0},
 	{"Cart Discount Offer",         models.TriggerAbandonedCart,  "Cart Discount Offer",     0},
-	// COD Order (2)
+	// COD Order (4)
 	{"COD Delivery Confirmation",   models.TriggerCODOrder,       "COD Confirmation",       0},
 	{"COD Post-Confirmation Reply", models.TriggerCODOrder,       "COD Confirmation Reply", 0},
+	{"COD Cancellation Reply",      models.TriggerCODOrder,       "COD Cancellation Reply", 0},
+	{"COD Help Reply",              models.TriggerCODOrder,       "COD Help Reply",         0},
 	// Payment Pending (1)
 	{"Payment Reminder",            models.TriggerPaymentPending, "Payment Reminder",        0},
 	// Refund Created (1)
@@ -1022,12 +1056,28 @@ func (db *DB) GetCustomerData(shop, phone string) map[string]interface{} {
 // ─── Pending Confirmations ────────────────────────────────────────────────────
 
 type PendingConfirmation struct {
-	ShopDomain    string
-	Phone         string
-	ReplyMessage  string
-	ReplyType     string
-	ReplyOptions  []string
-	TriggerOption string // SHA256 of this option must be in votedHashes to fire
+	ShopDomain         string
+	Phone              string
+	ReplyMessage       string
+	ReplyType          string
+	ReplyOptions       []string
+	TriggerOption      string // SHA256 of this option must be in votedHashes to fire
+
+	ReplyNoMessage     string
+	ReplyNoType        string
+	ReplyNoOptions     []string
+	NoOption           string
+
+	ReplyHelpMessage    string
+	ReplyHelpType       string
+	ReplyHelpOptions    []string
+	HelpOption          string
+
+	Step2YesMessage     string
+	Step2NoMessage      string
+	Step2HelpMessage    string
+
+	VotedBranch         string // "yes" | "no" | "help"
 }
 
 // normalizePhone strips formatting so Shopify phones (e.g. "+1 415-555-2671")
@@ -1051,53 +1101,108 @@ func optionVoted(option string, votedHashes [][]byte) bool {
 	return false
 }
 
-// StorePendingConfirmation saves a reply that is only sent after the customer
-// votes for triggerOption in the confirmation poll. Pass "" to fire on any message.
-func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string, triggerOption string) error {
+// StorePendingConfirmationExtended saves positive, negative, and help replies, plus step 2 follow-ups that are sent depending on which option the customer votes for.
+func (db *DB) StorePendingConfirmationExtended(
+	shop, phone string,
+	yesMsg, yesType string, yesOpts []string, yesOption string,
+	noMsg, noType string, noOpts []string, noOption string,
+	helpMsg, helpType string, helpOpts []string, helpOption string,
+	step2Yes, step2No, step2Help string,
+) error {
 	phone = normalizePhone(phone)
-	slog.Info("storing pending confirmation",
+	slog.Info("storing pending confirmation extended",
 		"shop", shop, "phone", phone,
-		"trigger_option", triggerOption,
-		"reply_type", msgType)
-	optJSON, _ := json.Marshal(options)
+		"yes_option", yesOption,
+		"no_option", noOption,
+		"help_option", helpOption,
+		"has_step2_yes", step2Yes != "")
+	
+	yesOptJSON, _ := json.Marshal(yesOpts)
+	noOptJSON, _ := json.Marshal(noOpts)
+	helpOptJSON, _ := json.Marshal(helpOpts)
+
 	_, err := db.conn.Exec(
 		`INSERT INTO pending_confirmations
-		 (id, shop_domain, phone, reply_message, reply_type, reply_options, trigger_option, expires_at)
-		 VALUES(?,?,?,?,?,?,?, datetime('now','+24 hours'))
+		 (id, shop_domain, phone, 
+		  reply_message, reply_type, reply_options, trigger_option,
+		  reply_no_message, reply_no_type, reply_no_options, no_option,
+		  reply_help_message, reply_help_type, reply_help_options, help_option,
+		  step2_yes_message, step2_no_message, step2_help_message,
+		  expires_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','+24 hours'))
 		 ON CONFLICT(shop_domain,phone) DO UPDATE SET
 		   reply_message=excluded.reply_message,
 		   reply_type=excluded.reply_type,
 		   reply_options=excluded.reply_options,
 		   trigger_option=excluded.trigger_option,
+		   reply_no_message=excluded.reply_no_message,
+		   reply_no_type=excluded.reply_no_type,
+		   reply_no_options=excluded.reply_no_options,
+		   no_option=excluded.no_option,
+		   reply_help_message=excluded.reply_help_message,
+		   reply_help_type=excluded.reply_help_type,
+		   reply_help_options=excluded.reply_help_options,
+		   help_option=excluded.help_option,
+		   step2_yes_message=excluded.step2_yes_message,
+		   step2_no_message=excluded.step2_no_message,
+		   step2_help_message=excluded.step2_help_message,
 		   expires_at=excluded.expires_at`,
-		uuid.NewString(), shop, phone, message, msgType, string(optJSON), triggerOption,
+		uuid.NewString(), shop, phone,
+		yesMsg, yesType, string(yesOptJSON), yesOption,
+		noMsg, noType, string(noOptJSON), noOption,
+		helpMsg, helpType, string(helpOptJSON), helpOption,
+		step2Yes, step2No, step2Help,
 	)
 	return err
 }
 
+// StorePendingConfirmation is kept for legacy compatibility (maps to yes/positive branch only).
+func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, options []string, triggerOption string) error {
+	return db.StorePendingConfirmationExtended(
+		shop, phone,
+		message, msgType, options, triggerOption,
+		"", "text", []string{}, "",
+		"", "text", []string{}, "",
+		"", "", "",
+	)
+}
+
 // PopPendingConfirmation retrieves and deletes the stored reply for a customer.
 // votedHashes is the slice of SHA256 option hashes returned by DecryptPollVote;
-// pass nil for plain-text messages. When TriggerOption is set, the reply is only
-// returned if one of the voted hashes matches — preventing wrong-option triggers.
+// pass nil for plain-text messages.
 func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *PendingConfirmation {
 	phone = normalizePhone(phone)
 	var pc PendingConfirmation
-	var optsJSON string
+	var yesOptsJSON, noOptsJSON, helpOptsJSON string
 	err := db.conn.QueryRow(
-		`SELECT shop_domain,phone,reply_message,reply_type,reply_options,COALESCE(trigger_option,'')
+		`SELECT shop_domain, phone, 
+		        reply_message, reply_type, reply_options, COALESCE(trigger_option,''),
+		        reply_no_message, reply_no_type, reply_no_options, COALESCE(no_option,''),
+		        reply_help_message, reply_help_type, reply_help_options, COALESCE(help_option,''),
+		        COALESCE(step2_yes_message,''), COALESCE(step2_no_message,''), COALESCE(step2_help_message,'')
 		 FROM pending_confirmations
 		 WHERE shop_domain=? AND phone=? AND expires_at > datetime('now')`,
 		shop, phone,
-	).Scan(&pc.ShopDomain, &pc.Phone, &pc.ReplyMessage, &pc.ReplyType, &optsJSON, &pc.TriggerOption)
+	).Scan(
+		&pc.ShopDomain, &pc.Phone, 
+		&pc.ReplyMessage, &pc.ReplyType, &yesOptsJSON, &pc.TriggerOption,
+		&pc.ReplyNoMessage, &pc.ReplyNoType, &noOptsJSON, &pc.NoOption,
+		&pc.ReplyHelpMessage, &pc.ReplyHelpType, &helpOptsJSON, &pc.HelpOption,
+		&pc.Step2YesMessage, &pc.Step2NoMessage, &pc.Step2HelpMessage,
+	)
 	if err != nil {
 		slog.Info("pop pending confirmation: no entry found (or expired)", "shop", shop, "phone", phone)
 		return nil
 	}
-	json.Unmarshal([]byte(optsJSON), &pc.ReplyOptions)
+	json.Unmarshal([]byte(yesOptsJSON), &pc.ReplyOptions)
+	json.Unmarshal([]byte(noOptsJSON), &pc.ReplyNoOptions)
+	json.Unmarshal([]byte(helpOptsJSON), &pc.ReplyHelpOptions)
 
 	slog.Info("pop pending confirmation: found entry",
 		"shop", shop, "phone", phone,
 		"trigger_option", pc.TriggerOption,
+		"no_option", pc.NoOption,
+		"help_option", pc.HelpOption,
 		"via_poll_vote", votedHashes != nil,
 		"voted_hash_count", len(votedHashes))
 
@@ -1108,23 +1213,22 @@ func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *
 				"shop", shop, "phone", phone, "trigger_option", pc.TriggerOption)
 			return nil
 		}
+		pc.VotedBranch = "yes"
 	} else {
-		// Poll-vote path: trigger_option must be set, and the voted hash must match it.
-		if pc.TriggerOption == "" {
-			slog.Warn("pop pending confirmation: entry has no trigger_option — cannot verify poll vote, skipping",
-				"shop", shop, "phone", phone)
+		// Poll-vote path: check which option was voted.
+		if optionVoted(pc.TriggerOption, votedHashes) {
+			slog.Info("pop pending confirmation: positive option matched", "shop", shop, "phone", phone)
+			pc.VotedBranch = "yes"
+		} else if pc.NoOption != "" && optionVoted(pc.NoOption, votedHashes) {
+			slog.Info("pop pending confirmation: negative option matched", "shop", shop, "phone", phone)
+			pc.VotedBranch = "no"
+		} else if pc.HelpOption != "" && optionVoted(pc.HelpOption, votedHashes) {
+			slog.Info("pop pending confirmation: help option matched", "shop", shop, "phone", phone)
+			pc.VotedBranch = "help"
+		} else {
+			slog.Info("pop pending confirmation: voted option hash did not match any trigger options", "shop", shop, "phone", phone)
 			return nil
 		}
-		expectedHash := sha256.Sum256([]byte(pc.TriggerOption))
-		slog.Info("pop pending confirmation: verifying hash",
-			"trigger_option", pc.TriggerOption,
-			"expected_hash_hex4", fmt.Sprintf("%x", expectedHash[:4]))
-		if !optionVoted(pc.TriggerOption, votedHashes) {
-			slog.Info("pop pending confirmation: voted option hash does not match trigger_option — reply blocked",
-				"trigger_option", pc.TriggerOption, "voted_hash_count", len(votedHashes))
-			return nil
-		}
-		slog.Info("pop pending confirmation: hash matched — sending reply", "shop", shop, "phone", phone)
 	}
 
 	db.conn.Exec(`DELETE FROM pending_confirmations WHERE shop_domain=? AND phone=?`, shop, phone)

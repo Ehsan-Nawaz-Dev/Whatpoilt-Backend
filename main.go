@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -88,17 +88,60 @@ func main() {
 			return
 		}
 		slog.Info("text confirmation — sending pending reply", "shop", shop, "phone", phone)
-		dispatchPendingReply(shop, phone, pc)
+		if pc.ReplyMessage != "" {
+			dispatchPendingReply(shop, phone, pc)
+		}
 	})
-	// Poll vote from customer: decrypted hashes are matched against trigger_option —
-	// only the correct "Yes" vote unlocks and sends the Post-Confirmation Reply.
+	// Poll vote from customer: decrypted hashes are matched against trigger options —
+	// dispatches the correct yes, no, or help reply, and sets up nested Step 2 flows.
 	registry.SetPollVoteHandler(func(shop, phone string, votedHashes [][]byte) {
 		pc := db.PopPendingConfirmation(shop, phone, votedHashes)
 		if pc == nil {
 			return
 		}
-		slog.Info("poll vote confirmed — sending pending reply", "shop", shop, "phone", phone)
-		dispatchPendingReply(shop, phone, pc)
+		slog.Info("poll vote event processed", "shop", shop, "phone", phone, "voted_branch", pc.VotedBranch)
+
+		var msgToSend string
+		var typeToSend string
+		var optsToSend []string
+
+		switch pc.VotedBranch {
+		case "yes":
+			msgToSend = pc.ReplyMessage
+			typeToSend = pc.ReplyType
+			optsToSend = pc.ReplyOptions
+		case "no":
+			msgToSend = pc.ReplyNoMessage
+			typeToSend = pc.ReplyNoType
+			optsToSend = pc.ReplyNoOptions
+
+			// If we matched the negative option and have Step 2 messages configured,
+			// store the Step 2 pending confirmation.
+			if pc.Step2YesMessage != "" {
+				err := db.StorePendingConfirmationExtended(
+					shop, phone,
+					pc.Step2YesMessage, "text", []string{}, "✅ Yes, cancel my order",
+					pc.Step2NoMessage, "text", []string{}, "❌ No, keep my order",
+					pc.Step2HelpMessage, "text", []string{}, "📞 I need to speak to someone",
+					"", "", "",
+				)
+				if err != nil {
+					slog.Error("failed to store step 2 pending confirmation", "err", err)
+				}
+			}
+		case "help":
+			msgToSend = pc.ReplyHelpMessage
+			typeToSend = pc.ReplyHelpType
+			optsToSend = pc.ReplyHelpOptions
+		}
+
+		if msgToSend != "" {
+			dispatchPendingReply(shop, phone, &store.PendingConfirmation{
+				ReplyMessage: msgToSend,
+				ReplyType:    typeToSend,
+				ReplyOptions: optsToSend,
+			})
+		}
 	})
 	// Restore existing WhatsApp sessions from disk.
 	registry.ConnectAll()

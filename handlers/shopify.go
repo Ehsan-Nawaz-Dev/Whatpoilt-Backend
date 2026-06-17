@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"bytes"
@@ -242,6 +242,16 @@ func (h *ShopifyHandler) tagOrderWithLabel(shop string, orderID int64, tag strin
 	}
 }
 
+func (h *ShopifyHandler) resolveTemplateByName(shop string, name string, vars map[string]string, trigger models.TriggerType) (string, string, []string) {
+	tmpl, err := h.db.GetTemplateByName(name, shop)
+	if err != nil || !tmpl.IsActive {
+		return "", "", nil
+	}
+	resolved := resolveTemplate(tmpl.Content, vars)
+	final := whatsapp.RandomizeMessageForTrigger(resolved, trigger)
+	return final, string(tmpl.MessageType), tmpl.Options
+}
+
 // enqueueAutomations writes jobs to the persistent pending_jobs table.
 // The worker goroutine picks them up and delivers them — surviving restarts.
 func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automation,
@@ -279,38 +289,96 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		items = append(items, loadedAuto{auto, *tmpl, final})
 	}
 
-	// positiveOption = first option of the first active poll in this batch.
-	// It is stored alongside the Post-Confirmation Reply so PopPendingConfirmation
-	// can verify the customer voted the correct option before sending it.
-	var positiveOption string
+	// positiveOption, negativeOption, helpOption = options of the first active poll in this batch.
+	var positiveOption, negativeOption, helpOption string
 	for _, la := range items {
 		if la.tmpl.MessageType == models.MessageTypePoll && len(la.tmpl.Options) > 0 {
 			positiveOption = la.tmpl.Options[0]
+			if len(la.tmpl.Options) > 1 {
+				negativeOption = la.tmpl.Options[1]
+			}
+			if len(la.tmpl.Options) > 2 {
+				helpOption = la.tmpl.Options[2]
+			}
 			break
 		}
 	}
 
-	// Pass 2 — enqueue jobs or store the pending reply.
-	for _, la := range items {
-		// Any automation whose name ends in "Post-Confirmation Reply" is held back
-		// until the customer votes the positive option in the accompanying poll.
-		if isPostConfirmationReply(la.auto.Name) {
-			if positiveOption == "" {
-				slog.Warn("skipping pending-confirmation automation — no active poll found",
-					"shop", shop, "automation", la.auto.Name)
-				continue
-			}
-			if err := h.db.StorePendingConfirmation(shop, phone, la.msg,
-				string(la.tmpl.MessageType), la.tmpl.Options, positiveOption); err != nil {
-				slog.Error("store pending confirmation", "shop", shop, "err", err)
-			}
-			continue
-		}
+	var yesMsg, yesType string
+	var yesOpts []string
 
-		runAt := time.Now().Add(whatsapp.JitterDelay(la.auto.DelayMinutes))
-		if err := h.db.EnqueueJob(shop, la.auto.ID, la.tmpl.ID, phone, la.msg,
-			la.tmpl.MessageType, la.tmpl.Options, runAt); err != nil {
-			slog.Error("enqueue job", "shop", shop, "err", err)
+	var noMsg, noType string
+	var noOpts []string
+
+	var helpMsg, helpType string
+	var helpOpts []string
+
+	var hasPending bool
+
+	// Pass 2 — enqueue jobs or collect pending replies.
+	for _, la := range items {
+		if isPostConfirmationReply(la.auto.Name) {
+			hasPending = true
+			if strings.HasSuffix(la.auto.Name, "Post-Confirmation Reply") {
+				yesMsg = la.msg
+				yesType = string(la.tmpl.MessageType)
+				yesOpts = la.tmpl.Options
+			} else if strings.HasSuffix(la.auto.Name, "Cancellation Reply") {
+				noMsg = la.msg
+				noType = string(la.tmpl.MessageType)
+				noOpts = la.tmpl.Options
+			} else if strings.HasSuffix(la.auto.Name, "Help Reply") {
+				helpMsg = la.msg
+				helpType = string(la.tmpl.MessageType)
+				helpOpts = la.tmpl.Options
+			}
+		} else {
+			runAt := time.Now().Add(whatsapp.JitterDelay(la.auto.DelayMinutes))
+			if err := h.db.EnqueueJob(shop, la.auto.ID, la.tmpl.ID, phone, la.msg,
+				la.tmpl.MessageType, la.tmpl.Options, runAt); err != nil {
+				slog.Error("enqueue job", "shop", shop, "err", err)
+			}
+		}
+	}
+
+	if hasPending {
+		if positiveOption == "" {
+			slog.Warn("skipping pending confirmation storing — no active poll found", "shop", shop)
+		} else {
+			// Resolve templates for the flow dynamically
+			var noMsgVal, noTypeVal string
+			var noOptsVal []string
+			var step2Yes, step2No, step2Help string
+
+			if trigger == models.TriggerOrderCreated {
+				noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
+				step2Yes, _, _ = h.resolveTemplateByName(shop, "Order Cancellation Reply", vars, trigger)
+				step2No = yesMsg // If they choose "No, keep order", send the confirmation reply
+				step2Help, _, _ = h.resolveTemplateByName(shop, "Customer Help Reply", vars, trigger)
+			} else if trigger == models.TriggerCODOrder {
+				noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
+				step2Yes, _, _ = h.resolveTemplateByName(shop, "COD Cancellation Reply", vars, trigger)
+				step2No = yesMsg // If they choose "No, keep order", send the COD confirmation reply
+				step2Help, _, _ = h.resolveTemplateByName(shop, "COD Help Reply", vars, trigger)
+			}
+
+			// Fallback: if Cancellation Verification template wasn't resolved, use standard values
+			if noMsgVal == "" {
+				noMsgVal = noMsg
+				noTypeVal = noType
+				noOptsVal = noOpts
+			}
+
+			err := h.db.StorePendingConfirmationExtended(
+				shop, phone,
+				yesMsg, yesType, yesOpts, positiveOption,
+				noMsgVal, noTypeVal, noOptsVal, negativeOption,
+				helpMsg, helpType, helpOpts, helpOption,
+				step2Yes, step2No, step2Help,
+			)
+			if err != nil {
+				slog.Error("store pending confirmation extended", "shop", shop, "err", err)
+			}
 		}
 	}
 }
@@ -355,7 +423,9 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 // isPostConfirmationReply returns true for automations that should be held as a
 // pending confirmation rather than sent immediately with the regular job queue.
 func isPostConfirmationReply(name string) bool {
-	return strings.HasSuffix(name, "Post-Confirmation Reply")
+	return strings.HasSuffix(name, "Post-Confirmation Reply") ||
+		strings.HasSuffix(name, "Cancellation Reply") ||
+		strings.HasSuffix(name, "Help Reply")
 }
 
 // isCODOrder returns true for payment gateways that represent cash-on-delivery.
