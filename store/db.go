@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -207,6 +208,97 @@ func (db *DB) migrate() error {
 	for _, s := range stmts {
 		db.conn.Exec(s) // ignore "already exists" / "duplicate column" errors
 	}
+
+	// ── Deduplicate templates ──────────────────────────────────────────────
+	type tempKey struct {
+		Shop string
+		Name string
+	}
+	type tempRow struct {
+		ID        string
+		IsDefault int
+		CreatedAt string
+	}
+
+	rows, err := db.conn.Query(`SELECT id, shop_domain, name, is_default, created_at FROM templates`)
+	if err == nil {
+		templatesByKey := make(map[tempKey][]tempRow)
+		for rows.Next() {
+			var r tempRow
+			var shop, name string
+			if err := rows.Scan(&r.ID, &shop, &name, &r.IsDefault, &r.CreatedAt); err == nil {
+				k := tempKey{Shop: shop, Name: name}
+				templatesByKey[k] = append(templatesByKey[k], r)
+			}
+		}
+		rows.Close()
+
+		for _, list := range templatesByKey {
+			if len(list) > 1 {
+				// Sort to find the best master template
+				// Priority: is_default=1 first, then oldest created_at, then ID
+				sort.Slice(list, func(i, j int) bool {
+					if list[i].IsDefault != list[j].IsDefault {
+						return list[i].IsDefault > list[j].IsDefault
+					}
+					if list[i].CreatedAt != list[j].CreatedAt {
+						return list[i].CreatedAt < list[j].CreatedAt
+					}
+					return list[i].ID < list[j].ID
+				})
+
+				masterID := list[0].ID
+				for i := 1; i < len(list); i++ {
+					dupID := list[i].ID
+					// Update automations referencing this duplicate
+					db.conn.Exec(`UPDATE automations SET template_id = ? WHERE template_id = ?`, masterID, dupID)
+					// Delete duplicate template
+					db.conn.Exec(`DELETE FROM templates WHERE id = ?`, dupID)
+				}
+			}
+		}
+	}
+
+	// ── Deduplicate automations ────────────────────────────────────────────
+	type autoKey struct {
+		Shop string
+		Name string
+	}
+	type autoRow struct {
+		ID        string
+		CreatedAt string
+	}
+
+	arows, err := db.conn.Query(`SELECT id, shop_domain, name, created_at FROM automations`)
+	if err == nil {
+		automationsByKey := make(map[autoKey][]autoRow)
+		for arows.Next() {
+			var r autoRow
+			var shop, name string
+			if err := arows.Scan(&r.ID, &shop, &name, &r.CreatedAt); err == nil {
+				k := autoKey{Shop: shop, Name: name}
+				automationsByKey[k] = append(automationsByKey[k], r)
+			}
+		}
+		arows.Close()
+
+		for _, list := range automationsByKey {
+			if len(list) > 1 {
+				// Sort by oldest created_at first, then ID
+				sort.Slice(list, func(i, j int) bool {
+					if list[i].CreatedAt != list[j].CreatedAt {
+						return list[i].CreatedAt < list[j].CreatedAt
+					}
+					return list[i].ID < list[j].ID
+				})
+
+				for i := 1; i < len(list); i++ {
+					db.conn.Exec(`DELETE FROM automations WHERE id = ?`, list[i].ID)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -340,16 +432,24 @@ func (db *DB) DeleteTemplate(id, shop string) error {
 	return err
 }
 
-// SeedDefaultTemplates inserts the 9 built-in templates for a shop if they
+// SeedDefaultTemplates inserts the built-in templates for a shop if they
 // do not already exist (idempotent — safe to call multiple times).
 func (db *DB) SeedDefaultTemplates(shop string) error {
 	for _, tmpl := range models.DefaultTemplates {
+		var count int
+		db.conn.QueryRow(
+			`SELECT COUNT(*) FROM templates WHERE shop_domain=? AND name=? AND is_default=1`,
+			shop, tmpl.Name,
+		).Scan(&count)
+		if count > 0 {
+			continue // already seeded
+		}
 		optJSON, _ := json.Marshal(tmpl.Options)
 		if tmpl.Options == nil {
 			optJSON = []byte("[]")
 		}
 		db.conn.Exec(
-			`INSERT OR IGNORE INTO templates
+			`INSERT INTO templates
 			 (id,shop_domain,name,content,message_type,options,is_active,is_default,created_at,updated_at)
 			 VALUES(?,?,?,?,?,?,1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
 			uuid.NewString(), shop, tmpl.Name, tmpl.Content,
@@ -519,6 +619,14 @@ func (db *DB) SeedAutomations(shop string) error {
 			`SELECT id FROM templates WHERE shop_domain=? AND name=? AND is_default=1`,
 			shop, def.TemplateName,
 		).Scan(&templateID)
+		if templateID == "" {
+			// Seed default templates to make sure it's created
+			db.SeedDefaultTemplates(shop)
+			db.conn.QueryRow(
+				`SELECT id FROM templates WHERE shop_domain=? AND name=? AND is_default=1`,
+				shop, def.TemplateName,
+			).Scan(&templateID)
+		}
 		db.conn.Exec(
 			`INSERT INTO automations
 			 (id,shop_domain,name,trigger_type,template_id,is_active,delay_minutes,created_at,updated_at)
