@@ -835,19 +835,22 @@ type ChatSession struct {
 
 func (db *DB) ListActiveChats(shop string) ([]ChatSession, error) {
 	query := `
-		SELECT m.contact_phone, COALESCE(c.name, ''), m.content, m.status, m.created_at
-		FROM message_logs m
-		LEFT JOIN contacts c ON m.contact_phone = c.phone AND c.shop_domain = m.shop_domain
-		INNER JOIN (
-			SELECT contact_phone, MAX(created_at) as max_time
-			FROM message_logs
-			WHERE shop_domain = ?
-			GROUP BY contact_phone
-		) latest ON m.contact_phone = latest.contact_phone AND m.created_at = latest.max_time
-		WHERE m.shop_domain = ?
-		ORDER BY m.created_at DESC
+		SELECT contact_phone, contact_name, content, status, created_at
+		FROM (
+			SELECT m.contact_phone, 
+			       COALESCE(c.name, '') as contact_name, 
+			       m.content, 
+			       m.status, 
+			       m.created_at,
+			       ROW_NUMBER() OVER (PARTITION BY m.contact_phone ORDER BY m.created_at DESC) as rn
+			FROM message_logs m
+			LEFT JOIN contacts c ON m.contact_phone = c.phone AND c.shop_domain = m.shop_domain
+			WHERE m.shop_domain = ?
+		)
+		WHERE rn = 1
+		ORDER BY created_at DESC
 	`
-	rows, err := db.conn.Query(query, shop, shop)
+	rows, err := db.conn.Query(query, shop)
 	if err != nil {
 		return nil, err
 	}
