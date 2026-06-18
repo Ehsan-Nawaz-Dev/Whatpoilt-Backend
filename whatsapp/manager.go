@@ -43,6 +43,10 @@ type QREvent struct {
 // OptOutFunc is called when a customer sends an opt-out keyword.
 type OptOutFunc func(phone string)
 
+type ConfirmationFunc func(phone string)
+type PollVoteFunc func(phone string, votedHashes [][]byte)
+type KeywordReplyFunc func(phone, text string) bool
+
 // IncomingMessageFunc is called when any message is received from a customer.
 type IncomingMessageFunc func(phone, content string)
 
@@ -470,9 +474,9 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 		} else if v.Message.GetLocationMessage() != nil {
 			text = "[Location]"
 		} else if v.Message.GetButtonsResponseMessage() != nil {
-			text = v.Message.GetButtonsResponseMessage().GetSelectedButtonId()
+			text = v.Message.GetButtonsResponseMessage().GetSelectedButtonID()
 		} else if v.Message.GetTemplateButtonReplyMessage() != nil {
-			text = v.Message.GetTemplateButtonReplyMessage().GetSelectedId()
+			text = v.Message.GetTemplateButtonReplyMessage().GetSelectedID()
 		}
 		text = strings.TrimSpace(text)
 
