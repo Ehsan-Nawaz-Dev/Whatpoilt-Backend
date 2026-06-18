@@ -181,8 +181,8 @@ var DefaultTemplates = []Template{
 	{
 		Name:        "Cart Discount Offer",
 		MessageType: MessageTypeButtons,
-		Content:     "Hi <<name>>! 🏷️ Still thinking about your cart worth <<total>>?\n\nComplete your purchase today and enjoy an exclusive discount. Don't let your items sell out!\n\n🛒 <<cart_url>>",
-		Options:     []string{"🛍️ Complete Purchase", "❓ I Need Help"},
+		Content:     "Hi <<name>>! 🏷️ Still thinking about your cart worth <<total>>?\n\nComplete your purchase today and enjoy an exclusive 10% discount auto-applied at checkout!\n\n🛒 Link: <<discount_cart_url>>",
+		Options:     []string{"🛍️ Claim Discount", "❓ I Need Help"},
 		IsActive:    true,
 		IsDefault:   true,
 	},

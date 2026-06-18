@@ -43,17 +43,8 @@ type QREvent struct {
 // OptOutFunc is called when a customer sends an opt-out keyword.
 type OptOutFunc func(phone string)
 
-// ConfirmationFunc is called when a customer sends a plain-text message so the
-// caller can look up and deliver a pending confirmation reply.
-type ConfirmationFunc func(phone string)
-
-// PollVoteFunc is called when a customer votes in a poll. votedHashes contains
-// the SHA256 hashes of the selected option names (from DecryptPollVote).
-type PollVoteFunc func(phone string, votedHashes [][]byte)
-
-// KeywordReplyFunc is called with the customer's text so the caller can look up
-// and send a matching keyword auto-reply. Returns true if a reply was sent.
-type KeywordReplyFunc func(phone, text string) bool
+// IncomingMessageFunc is called when any message is received from a customer.
+type IncomingMessageFunc func(phone, content string)
 
 // Manager wraps a single shop's whatsmeow client.
 type Manager struct {
@@ -65,15 +56,17 @@ type Manager struct {
 
 	pairingMu sync.Mutex // prevents two goroutines starting QR flow simultaneously
 
-	onOptOut        OptOutFunc        // injected by registry
-	onConfirmation  ConfirmationFunc  // injected by registry (text messages)
-	onPollVote      PollVoteFunc      // injected by registry (poll votes)
-	onKeywordReply  KeywordReplyFunc  // injected by registry (keyword auto-reply)
+	onOptOut          OptOutFunc        // injected by registry
+	onConfirmation    ConfirmationFunc  // injected by registry (text messages)
+	onPollVote        PollVoteFunc      // injected by registry (poll votes)
+	onKeywordReply    KeywordReplyFunc  // injected by registry (keyword auto-reply)
+	onIncomingMessage IncomingMessageFunc // injected by registry (chat inbox)
 }
 
 func (m *Manager) SetConfirmationHandler(fn ConfirmationFunc)   { m.onConfirmation = fn }
 func (m *Manager) SetPollVoteHandler(fn PollVoteFunc)           { m.onPollVote = fn }
 func (m *Manager) SetKeywordReplyHandler(fn KeywordReplyFunc)   { m.onKeywordReply = fn }
+func (m *Manager) SetIncomingMessageHandler(fn IncomingMessageFunc) { m.onIncomingMessage = fn }
 
 var optOutKeywords = regexp.MustCompile(`(?i)^(stop|unsubscribe|opt.?out|no|cancel|0|quit|end)$`)
 
@@ -460,7 +453,32 @@ func (m *Manager) handleEvent(rawEvt interface{}) {
 		}
 		resolvedSender := m.resolveJID(v.Info.Sender)
 		phone := resolvedSender.User
-		text := strings.TrimSpace(v.Message.GetConversation())
+
+		text := ""
+		if v.Message.GetConversation() != "" {
+			text = v.Message.GetConversation()
+		} else if v.Message.GetExtendedTextMessage() != nil {
+			text = v.Message.GetExtendedTextMessage().GetText()
+		} else if v.Message.GetImageMessage() != nil {
+			text = "[Photo]"
+		} else if v.Message.GetVideoMessage() != nil {
+			text = "[Video]"
+		} else if v.Message.GetAudioMessage() != nil {
+			text = "[Audio]"
+		} else if v.Message.GetDocumentMessage() != nil {
+			text = "[Document]"
+		} else if v.Message.GetLocationMessage() != nil {
+			text = "[Location]"
+		} else if v.Message.GetButtonsResponseMessage() != nil {
+			text = v.Message.GetButtonsResponseMessage().GetSelectedButtonId()
+		} else if v.Message.GetTemplateButtonReplyMessage() != nil {
+			text = v.Message.GetTemplateButtonReplyMessage().GetSelectedId()
+		}
+		text = strings.TrimSpace(text)
+
+		if text != "" && m.onIncomingMessage != nil {
+			m.onIncomingMessage(phone, text)
+		}
 
 		// Opt-out check
 		if optOutKeywords.MatchString(text) && m.onOptOut != nil {

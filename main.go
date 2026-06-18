@@ -143,6 +143,14 @@ func main() {
 			})
 		}
 	})
+	// Log incoming WhatsApp messages from customers
+	registry.SetIncomingMessageHandler(func(shop, phone, content string) {
+		slog.Info("incoming message received", "shop", shop, "phone", phone, "len", len(content))
+		_, err := db.CreateIncomingMessageLog(shop, phone, content)
+		if err != nil {
+			slog.Error("failed to log incoming message", "err", err)
+		}
+	})
 	// Restore existing WhatsApp sessions from disk.
 	registry.ConnectAll()
 
@@ -210,6 +218,7 @@ func main() {
 	sessH := handlers.NewSessionHandler(db)
 	kwdH  := handlers.NewKeywordHandler(db)
 	brdH  := handlers.NewBroadcastHandler(db, registry)
+	inboxH := handlers.NewInboxHandler(registry, db)
 
 	// ── Authenticated API routes (/api/*) ─────────────────────────────────────
 	// Every request must carry Authorization: Bearer <BACKEND_API_KEY>
@@ -264,6 +273,10 @@ func main() {
 
 		brd := api.Group("/broadcasts")
 		brd.POST("", brdH.Send)
+
+		inbox := api.Group("/inbox")
+		inbox.GET("/chats",       inboxH.ListActiveChats)
+		inbox.GET("/chats/:phone", inboxH.GetChatHistory)
 	}
 
 	// ── Shopify webhook routes (HMAC verified, no API key header) ─────────────

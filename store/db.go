@@ -806,6 +806,93 @@ func (db *DB) ListMessageLogs(shop string, limit int) ([]models.MessageLog, erro
 	return out, nil
 }
 
+func (db *DB) CreateIncomingMessageLog(shop, phone, content string) (*models.MessageLog, error) {
+	phone = normalizePhone(phone)
+	l := models.MessageLog{
+		ID:           uuid.NewString(),
+		AutomationID: "",
+		ContactPhone: phone,
+		TemplateID:   "",
+		Content:      content,
+		Status:       "received",
+		CreatedAt:    time.Now(),
+	}
+	sentAt := time.Now()
+	_, err := db.conn.Exec(
+		`INSERT INTO message_logs(id,shop_domain,automation_id,contact_phone,template_id,content,status,sent_at,created_at)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		l.ID, shop, l.AutomationID, l.ContactPhone, l.TemplateID, l.Content, l.Status, sentAt, l.CreatedAt)
+	return &l, err
+}
+
+type ChatSession struct {
+	Phone       string    `json:"phone"`
+	ContactName string    `json:"contact_name"`
+	LastMessage string    `json:"last_message"`
+	LastStatus  string    `json:"last_status"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (db *DB) ListActiveChats(shop string) ([]ChatSession, error) {
+	query := `
+		SELECT m.contact_phone, COALESCE(c.name, ''), m.content, m.status, m.created_at
+		FROM message_logs m
+		LEFT JOIN contacts c ON m.contact_phone = c.phone AND c.shop_domain = m.shop_domain
+		INNER JOIN (
+			SELECT contact_phone, MAX(created_at) as max_time
+			FROM message_logs
+			WHERE shop_domain = ?
+			GROUP BY contact_phone
+		) latest ON m.contact_phone = latest.contact_phone AND m.created_at = latest.max_time
+		WHERE m.shop_domain = ?
+		ORDER BY m.created_at DESC
+	`
+	rows, err := db.conn.Query(query, shop, shop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []ChatSession
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var cs ChatSession
+		if err := rows.Scan(&cs.Phone, &cs.ContactName, &cs.LastMessage, &cs.LastStatus, &cs.UpdatedAt); err == nil {
+			if !seen[cs.Phone] {
+				seen[cs.Phone] = true
+				if cs.ContactName == "" {
+					cs.ContactName = cs.Phone
+				}
+				sessions = append(sessions, cs)
+			}
+		}
+	}
+	return sessions, nil
+}
+
+func (db *DB) GetChatHistory(shop, phone string) ([]models.MessageLog, error) {
+	phone = normalizePhone(phone)
+	rows, err := db.conn.Query(
+		`SELECT id, COALESCE(automation_id,''), contact_phone, COALESCE(template_id,''),
+		        content, status, COALESCE(error,''), sent_at, created_at
+		 FROM message_logs
+		 WHERE shop_domain = ? AND contact_phone = ?
+		 ORDER BY created_at ASC`, shop, phone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.MessageLog
+	for rows.Next() {
+		var l models.MessageLog
+		rows.Scan(&l.ID, &l.AutomationID, &l.ContactPhone, &l.TemplateID,
+			&l.Content, &l.Status, &l.Error, &l.SentAt, &l.CreatedAt)
+		out = append(out, l)
+	}
+	return out, nil
+}
+
 // ─── Pending Jobs (persistent queue) ─────────────────────────────────────────
 
 func (db *DB) EnqueueJob(shop, automationID, templateID, phone, message string,

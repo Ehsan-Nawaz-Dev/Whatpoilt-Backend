@@ -174,13 +174,21 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 		return
 	}
 
+	discountCartURL := checkout.AbandonedCheckoutURL
+	if strings.Contains(discountCartURL, "?") {
+		discountCartURL += "&discount=SAVE10"
+	} else {
+		discountCartURL += "?discount=SAVE10"
+	}
+
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", checkout.Customer.FirstName, checkout.Customer.LastName))
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(checkout.Customer.ID))
 
 	h.enqueueAutomations(shop, automations, phone, models.TriggerAbandonedCart, map[string]string{
-		"name":     name,
-		"cart_url": checkout.AbandonedCheckoutURL,
-		"total":    checkout.TotalPrice,
+		"name":              name,
+		"cart_url":          checkout.AbandonedCheckoutURL,
+		"discount_cart_url": discountCartURL,
+		"total":             checkout.TotalPrice,
 	})
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
 }
