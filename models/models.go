@@ -609,3 +609,28 @@ type OptOutStat struct {
 	Date  string `json:"date"`
 	Count int    `json:"count"`
 }
+
+// SupportMessage represents a merchant support ticket.
+type SupportMessage struct {
+	ID        string    `json:"id"`
+	Shop      string    `json:"shop_domain"`
+	Subject   string    `json:"subject"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// FAQ represents a dynamic FAQ entry.
+type FAQ struct {
+	ID        string    `json:"id"`
+	Question  string    `json:"question"`
+	Answer    string    `json:"answer"`
+	SortOrder int       `json:"sort_order"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SupportInfo stores company contact details.
+type SupportInfo struct {
+	Email   string `json:"email"`
+	Phone   string `json:"phone"`
+	Address string `json:"address"`
+}

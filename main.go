@@ -219,6 +219,10 @@ func main() {
 	kwdH  := handlers.NewKeywordHandler(db)
 	brdH  := handlers.NewBroadcastHandler(db, registry)
 	inboxH := handlers.NewInboxHandler(registry, db)
+	supportH := handlers.NewSupportHandler(db)
+
+	// Seed default FAQs on startup
+	db.SeedDefaultFAQs()
 
 	// ── Authenticated API routes (/api/*) ─────────────────────────────────────
 	// Every request must carry Authorization: Bearer <BACKEND_API_KEY>
@@ -277,6 +281,8 @@ func main() {
 		inbox := api.Group("/inbox")
 		inbox.GET("/chats",       inboxH.ListActiveChats)
 		inbox.GET("/chats/:phone", inboxH.GetChatHistory)
+
+		api.POST("/support", supportH.SubmitTicket)
 	}
 
 	// ── Shopify webhook routes (HMAC verified, no API key header) ─────────────
@@ -361,6 +367,13 @@ func main() {
 		adm.POST("/announcements",           admH.CreateAnnouncement)
 		adm.PUT("/announcements/:id",        admH.UpdateAnnouncement)
 		adm.DELETE("/announcements/:id",     admH.DeleteAnnouncement)
+
+		adm.GET("/support",                  supportH.ListTickets)
+		adm.PUT("/support-info",             supportH.UpdateSupportInfo)
+		adm.GET("/faqs",                     supportH.ListAdminFAQs)
+		adm.POST("/faqs",                    supportH.CreateFAQ)
+		adm.PUT("/faqs/:id",                 supportH.UpdateFAQ)
+		adm.DELETE("/faqs/:id",              supportH.DeleteFAQ)
 	}
 
 	// ── Public routes (no auth — read-only, consumed by merchant frontend) ────
@@ -368,6 +381,8 @@ func main() {
 	{
 		pub.GET("/plans",         admH.PublicPlans)
 		pub.GET("/announcements", admH.PublicAnnouncements)
+		pub.GET("/support-info",  supportH.GetSupportInfo)
+		pub.GET("/faqs",          supportH.ListPublicFAQs)
 	}
 
 	r.GET("/health", func(c *gin.Context) {

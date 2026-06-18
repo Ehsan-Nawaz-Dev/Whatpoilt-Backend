@@ -167,6 +167,20 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(shop_domain, keyword))`,
 
+		`CREATE TABLE IF NOT EXISTS support_messages (
+			id TEXT PRIMARY KEY,
+			shop_domain TEXT NOT NULL DEFAULT '',
+			subject TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE TABLE IF NOT EXISTS faqs (
+			id TEXT PRIMARY KEY,
+			question TEXT NOT NULL,
+			answer TEXT NOT NULL,
+			sort_order INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
 		// ── indexes — every query filters by shop_domain ───────────────────
 		`CREATE INDEX IF NOT EXISTS idx_templates_shop   ON templates(shop_domain)`,
 		`CREATE INDEX IF NOT EXISTS idx_automations_shop ON automations(shop_domain, trigger_type, is_active)`,
