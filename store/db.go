@@ -213,6 +213,49 @@ func (db *DB) migrate() error {
 	db.conn.Exec(`DELETE FROM templates WHERE name = 'Order Cancellation Reply'`)
 	db.conn.Exec(`DELETE FROM automations WHERE name = 'Order Cancellation Reply'`)
 
+	// ── Healing: Auto-resolve automations missing templates or pointing to dead IDs
+	badAutoRows, err := db.conn.Query(`
+		SELECT a.id, a.shop_domain, a.name 
+		FROM automations a 
+		LEFT JOIN templates t ON a.template_id = t.id 
+		WHERE a.template_id IS NULL OR a.template_id = '' OR t.id IS NULL
+	`)
+	if err == nil {
+		type badAuto struct {
+			ID   string
+			Shop string
+			Name string
+		}
+		var badAutos []badAuto
+		for badAutoRows.Next() {
+			var ba badAuto
+			if err := badAutoRows.Scan(&ba.ID, &ba.Shop, &ba.Name); err == nil {
+				badAutos = append(badAutos, ba)
+			}
+		}
+		badAutoRows.Close()
+
+		for _, ba := range badAutos {
+			var templateName string
+			for _, def := range defaultAutomationDefs {
+				if def.Name == ba.Name {
+					templateName = def.TemplateName
+					break
+				}
+			}
+			if templateName != "" {
+				var templateID string
+				db.conn.QueryRow(
+					`SELECT id FROM templates WHERE shop_domain=? AND name=? AND is_default=1`,
+					ba.Shop, templateName,
+				).Scan(&templateID)
+				if templateID != "" {
+					db.conn.Exec(`UPDATE automations SET template_id = ? WHERE id = ?`, templateID, ba.ID)
+				}
+			}
+		}
+	}
+
 	// ── Deduplicate templates ──────────────────────────────────────────────
 	type tempKey struct {
 		Shop string
