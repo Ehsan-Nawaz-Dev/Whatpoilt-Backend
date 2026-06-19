@@ -126,6 +126,34 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	c.JSON(200, plan)
 }
 
+// POST /admin/plans
+func (h *AdminHandler) CreatePlan(c *gin.Context) {
+	var plan models.AdminPlan
+	if err := c.ShouldBindJSON(&plan); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if plan.PlanKey == "" {
+		c.JSON(400, gin.H{"error": "plan_key is required"})
+		return
+	}
+	if err := h.db.UpsertAdminPlan(plan); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, plan)
+}
+
+// DELETE /admin/plans/:key
+func (h *AdminHandler) DeletePlan(c *gin.Context) {
+	key := c.Param("key")
+	if err := h.db.DeleteAdminPlan(key); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 // POST /admin/plans/seed
 func (h *AdminHandler) SeedPlans(c *gin.Context) {
 	if err := h.db.SeedDefaultAdminPlans(); err != nil {

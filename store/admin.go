@@ -197,6 +197,11 @@ func (db *DB) UpsertAdminPlan(p models.AdminPlan) error {
 	return err
 }
 
+func (db *DB) DeleteAdminPlan(key string) error {
+	_, err := db.conn.Exec(`DELETE FROM admin_plans WHERE plan_key=?`, key)
+	return err
+}
+
 // ─── Admin: Announcements ─────────────────────────────────────────────────────
 
 func (db *DB) ListAnnouncements() ([]models.Announcement, error) {
