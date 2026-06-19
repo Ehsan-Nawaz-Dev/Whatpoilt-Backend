@@ -217,6 +217,12 @@ func (db *DB) migrate() error {
 		`ALTER TABLE settings ADD COLUMN sending_window_start INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN sending_window_end INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN win_back_inactive_days INTEGER DEFAULT 0`,
+		`ALTER TABLE settings ADD COLUMN plan_key TEXT DEFAULT 'starter'`,
+		`ALTER TABLE settings ADD COLUMN plan_name TEXT DEFAULT 'Starter'`,
+		`ALTER TABLE settings ADD COLUMN message_limit INTEGER DEFAULT 500`,
+		`ALTER TABLE settings ADD COLUMN messages_sent_this_month INTEGER DEFAULT 0`,
+		`ALTER TABLE settings ADD COLUMN limit_reset_at DATETIME`,
+		`ALTER TABLE settings ADD COLUMN subscription_line_item_id TEXT DEFAULT ''`,
 		`ALTER TABLE support_messages ADD COLUMN reply TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE support_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'open'`,
 		`ALTER TABLE support_messages ADD COLUMN replied_at DATETIME`,
@@ -801,6 +807,13 @@ func (db *DB) UpdateMessageLogStatus(id string, status models.MessageStatus, err
 	_, err := db.conn.Exec(
 		`UPDATE message_logs SET status=?,error=?,sent_at=? WHERE id=?`,
 		status, errMsg, sentAt, id)
+	if err == nil && status == models.MessageStatusSent {
+		var shop string
+		db.conn.QueryRow(`SELECT shop_domain FROM message_logs WHERE id=?`, id).Scan(&shop)
+		if shop != "" {
+			db.IncrementSentMessages(shop)
+		}
+	}
 	return err
 }
 
@@ -995,9 +1008,203 @@ var defaultSettings = models.Settings{
 	ReadDelayMinSeconds: 1, ReadDelayMaxSeconds: 5,
 	FrequencyCapPerDay: 0, SendingWindowStart: -1, SendingWindowEnd: -1,
 	WinBackInactiveDays: 0,
+	PlanKey: "starter", PlanName: "Starter", MessageLimit: 500, MessagesSentThisMonth: 0,
+}
+
+func (db *DB) CheckAndResetPlanLimits(shop string) {
+	var limitResetAt *time.Time
+	var messagesSentThisMonth int
+	err := db.conn.QueryRow(`SELECT limit_reset_at, messages_sent_this_month FROM settings WHERE shop_domain=?`, shop).Scan(&limitResetAt, &messagesSentThisMonth)
+	if err != nil {
+		return
+	}
+	if limitResetAt != nil && time.Now().After(*limitResetAt) {
+		nextReset := *limitResetAt
+		for !nextReset.After(time.Now()) {
+			nextReset = nextReset.AddDate(0, 1, 0)
+		}
+		db.conn.Exec(`UPDATE settings SET messages_sent_this_month = 0, limit_reset_at = ? WHERE shop_domain = ?`, nextReset, shop)
+	}
+}
+
+func (db *DB) ChargeUsageMessage(shop string, planKey string, lineItemId string) (bool, error) {
+	if lineItemId == "" {
+		slog.Warn("ChargeUsageMessage failed: no subscription_line_item_id stored", "shop", shop)
+		return false, fmt.Errorf("no subscription_line_item_id stored for shop")
+	}
+
+	token := db.GetShopToken(shop)
+	if token == "" {
+		slog.Warn("ChargeUsageMessage failed: no access token stored", "shop", shop)
+		return false, fmt.Errorf("no access token stored for shop")
+	}
+
+	var price float64 = 0.02
+	if planKey == "pro" {
+		price = 0.01
+	}
+
+	const query = `mutation appUsageRecordCreate($input: AppUsageRecordCreateInput!) {
+		appUsageRecordCreate(input: $input) {
+			appUsageRecord { id }
+			userErrors { field message }
+		}
+	}`
+
+	idempotencyKey := uuid.New().String()
+	payload, _ := json.Marshal(map[string]interface{}{
+		"query": query,
+		"variables": map[string]interface{}{
+			"input": map[string]interface{}{
+				"subscriptionLineItemId": lineItemId,
+				"description":            "Charge for extra WhatsApp message above limit",
+				"price": map[string]interface{}{
+					"amount":       price,
+					"currencyCode": "USD",
+				},
+				"idempotencyKey": idempotencyKey,
+			},
+		},
+	})
+
+	url := fmt.Sprintf("https://%s/admin/api/2026-01/graphql.json", shop)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Shopify-Access-Token", token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("shopify usage charge graphql status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data struct {
+			AppUsageRecordCreate struct {
+				AppUsageRecord struct{ ID string } `json:"appUsageRecord"`
+				UserErrors     []struct{ Message string } `json:"userErrors"`
+			} `json:"appUsageRecordCreate"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, err
+	}
+
+	if len(result.Data.AppUsageRecordCreate.UserErrors) > 0 {
+		var errMsgs []string
+		for _, e := range result.Data.AppUsageRecordCreate.UserErrors {
+			errMsgs = append(errMsgs, e.Message)
+		}
+		errMsg := strings.Join(errMsgs, "; ")
+		slog.Error("Shopify appUsageRecordCreate mutation returned userErrors", "shop", shop, "errors", errMsg)
+		return false, fmt.Errorf("graphql errors: %s", errMsg)
+	}
+
+	slog.Info("Successfully charged usage fee for extra message", "shop", shop, "price", price, "id", result.Data.AppUsageRecordCreate.AppUsageRecord.ID)
+	return true, nil
+}
+
+func (db *DB) CanSendWhatsAppMessage(shop string) (bool, error) {
+	db.CheckAndResetPlanLimits(shop)
+	var limit int
+	var sent int
+	var planKey string
+	var lineItemId string
+	err := db.conn.QueryRow(`SELECT message_limit, messages_sent_this_month, COALESCE(plan_key,'starter'), COALESCE(subscription_line_item_id,'') FROM settings WHERE shop_domain=?`, shop).Scan(&limit, &sent, &planKey, &lineItemId)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if limit == -1 {
+		return true, nil
+	}
+	if sent < limit {
+		return true, nil
+	}
+
+	// Over limit: try charging usage fee
+	allowed, chargeErr := db.ChargeUsageMessage(shop, planKey, lineItemId)
+	if chargeErr != nil {
+		slog.Error("failed to charge usage fee for extra message", "shop", shop, "err", chargeErr)
+		return false, chargeErr
+	}
+	return allowed, nil
+}
+
+func (db *DB) IncrementSentMessages(shop string) {
+	db.CheckAndResetPlanLimits(shop)
+	db.conn.Exec(`UPDATE settings SET messages_sent_this_month = messages_sent_this_month + 1 WHERE shop_domain = ?`, shop)
+}
+
+func (db *DB) SyncShopPlan(shop string, planName string) error {
+	return db.SyncShopPlanWithLineItem(shop, planName, "")
+}
+
+func (db *DB) SyncShopPlanWithLineItem(shop string, planName string, lineItemId string) error {
+	planKey := strings.ToLower(planName)
+	var displayName string = planName
+	var messageLimit int = 500
+
+	err := db.conn.QueryRow(`SELECT plan_key, display_name, message_limit FROM admin_plans WHERE LOWER(display_name) = ? OR plan_key = ?`, planKey, planKey).Scan(&planKey, &displayName, &messageLimit)
+	if err != nil {
+		if strings.Contains(planKey, "pro") {
+			planKey = "pro"
+			displayName = "Pro"
+			messageLimit = 2000
+		} else if strings.Contains(planKey, "business") {
+			planKey = "business"
+			displayName = "Business"
+			messageLimit = -1
+		} else {
+			planKey = "starter"
+			displayName = "Starter"
+			messageLimit = 500
+		}
+	}
+
+	var currentPlanKey string
+	var limitResetAt *time.Time
+	err = db.conn.QueryRow(`SELECT plan_key, limit_reset_at FROM settings WHERE shop_domain = ?`, shop).Scan(&currentPlanKey, &limitResetAt)
+	
+	now := time.Now()
+	nextReset := now.AddDate(0, 1, 0)
+
+	if err == sql.ErrNoRows {
+		_, err = db.conn.Exec(
+			`INSERT INTO settings(shop_domain, plan_key, plan_name, message_limit, messages_sent_this_month, limit_reset_at, subscription_line_item_id)
+			 VALUES(?, ?, ?, ?, 0, ?, ?)`,
+			shop, planKey, displayName, messageLimit, nextReset, lineItemId)
+		return err
+	} else if err == nil {
+		if currentPlanKey != planKey || limitResetAt == nil {
+			_, err = db.conn.Exec(
+				`UPDATE settings SET plan_key = ?, plan_name = ?, message_limit = ?, messages_sent_this_month = 0, limit_reset_at = ?, subscription_line_item_id = ?
+				 WHERE shop_domain = ?`,
+				planKey, displayName, messageLimit, nextReset, lineItemId, shop)
+		} else {
+			// Update subscription line item ID even if plan didn't change (e.g. renewal or reinstallation)
+			_, err = db.conn.Exec(
+				`UPDATE settings SET plan_key = ?, plan_name = ?, message_limit = ?, subscription_line_item_id = ?
+				 WHERE shop_domain = ?`,
+				planKey, displayName, messageLimit, lineItemId, shop)
+		}
+		return err
+	}
+	return err
 }
 
 func (db *DB) GetSettings(shop string) (models.Settings, error) {
+	db.CheckAndResetPlanLimits(shop)
 	var s models.Settings
 	var enabled int
 	err := db.conn.QueryRow(
@@ -1007,13 +1214,20 @@ func (db *DB) GetSettings(shop string) (models.Settings, error) {
 		        COALESCE(frequency_cap_per_day,0),
 		        COALESCE(sending_window_start,-1),
 		        COALESCE(sending_window_end,-1),
-		        COALESCE(win_back_inactive_days,0)
+		        COALESCE(win_back_inactive_days,0),
+		        COALESCE(plan_key,'starter'),
+		        COALESCE(plan_name,'Starter'),
+		        COALESCE(message_limit,500),
+		        COALESCE(messages_sent_this_month,0),
+		        limit_reset_at,
+		        COALESCE(subscription_line_item_id,'')
 		 FROM settings WHERE shop_domain=?`, shop).
 		Scan(&enabled, &s.TypingSpeedCPM,
 			&s.MinTypingSeconds, &s.MaxTypingSeconds,
 			&s.ReadDelayMinSeconds, &s.ReadDelayMaxSeconds,
 			&s.FrequencyCapPerDay, &s.SendingWindowStart, &s.SendingWindowEnd,
-			&s.WinBackInactiveDays)
+			&s.WinBackInactiveDays, &s.PlanKey, &s.PlanName, &s.MessageLimit,
+			&s.MessagesSentThisMonth, &s.LimitResetAt, &s.SubscriptionLineItemId)
 	if err == sql.ErrNoRows {
 		return defaultSettings, nil
 	}
@@ -1629,10 +1843,16 @@ func (db *DB) GetAnalytics(shop string, days int) (models.AnalyticsData, error) 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
 func (db *DB) GetStats(shop string) (models.DashboardStats, error) {
+	db.CheckAndResetPlanLimits(shop)
 	var s models.DashboardStats
 	db.conn.QueryRow(`SELECT COUNT(*) FROM message_logs WHERE shop_domain=? AND status='sent'`, shop).Scan(&s.TotalMessagesSent)
 	db.conn.QueryRow(`SELECT COUNT(*) FROM message_logs WHERE shop_domain=? AND status='sent' AND DATE(created_at)=DATE('now')`, shop).Scan(&s.MessagesToday)
 	db.conn.QueryRow(`SELECT COUNT(*) FROM automations WHERE shop_domain=? AND is_active=1`, shop).Scan(&s.ActiveAutomations)
 	db.conn.QueryRow(`SELECT COUNT(*) FROM contacts WHERE shop_domain=? AND opted_out=0`, shop).Scan(&s.TotalContacts)
+
+	db.conn.QueryRow(
+		`SELECT COALESCE(plan_name,'Starter'), COALESCE(message_limit,500), COALESCE(messages_sent_this_month,0), limit_reset_at
+		 FROM settings WHERE shop_domain=?`, shop).Scan(&s.PlanName, &s.MessageLimit, &s.MessagesSentThisMonth, &s.LimitResetAt)
+
 	return s, nil
 }

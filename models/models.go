@@ -439,11 +439,15 @@ type SendMessageRequest struct {
 
 // DashboardStats aggregates key metrics for the dashboard.
 type DashboardStats struct {
-	TotalMessagesSent int    `json:"total_messages_sent"`
-	MessagesToday     int    `json:"messages_today"`
-	ActiveAutomations int    `json:"active_automations"`
-	TotalContacts     int    `json:"total_contacts"`
-	WAStatus          string `json:"wa_status"`
+	TotalMessagesSent     int        `json:"total_messages_sent"`
+	MessagesToday         int        `json:"messages_today"`
+	ActiveAutomations     int        `json:"active_automations"`
+	TotalContacts         int        `json:"total_contacts"`
+	WAStatus              string     `json:"wa_status"`
+	PlanName              string     `json:"plan_name"`
+	MessageLimit          int        `json:"message_limit"`
+	MessagesSentThisMonth int        `json:"messages_sent_this_month"`
+	LimitResetAt          *time.Time `json:"limit_reset_at"`
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
@@ -586,6 +590,14 @@ type Settings struct {
 	SendingWindowEnd   int `json:"sending_window_end"`    // hour 0-23; -1 = no restriction
 	// Win-back
 	WinBackInactiveDays int `json:"win_back_inactive_days"` // days of inactivity before win-back fires (0 = disabled)
+
+	// Plan fields
+	PlanKey                string     `json:"plan_key"`
+	PlanName               string     `json:"plan_name"`
+	MessageLimit           int        `json:"message_limit"`
+	MessagesSentThisMonth  int        `json:"messages_sent_this_month"`
+	LimitResetAt           *time.Time `json:"limit_reset_at"`
+	SubscriptionLineItemId string     `json:"subscription_line_item_id"`
 }
 
 // KeywordReply maps an incoming text keyword to an auto-reply message.

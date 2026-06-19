@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"context"
@@ -131,6 +131,16 @@ func (h *WhatsAppHandler) SendMessage(c *gin.Context) {
 
 	if h.db.IsOptedOut(shop, req.Phone) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "contact has opted out"})
+		return
+	}
+
+	allowed, err := h.db.CanSendWhatsAppMessage(shop)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check plan limits"})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Plan message limit reached"})
 		return
 	}
 

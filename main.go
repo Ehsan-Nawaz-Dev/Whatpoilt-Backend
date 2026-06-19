@@ -319,8 +319,10 @@ func main() {
 
 		internal.POST("/register-shop", func(c *gin.Context) {
 			var req struct {
-				ShopDomain  string `json:"shop_domain"  binding:"required"`
-				AccessToken string `json:"access_token" binding:"required"`
+				ShopDomain             string `json:"shop_domain"  binding:"required"`
+				AccessToken            string `json:"access_token" binding:"required"`
+				PlanName               string `json:"plan_name"`
+				SubscriptionLineItemId string `json:"subscription_line_item_id"`
 			}
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
@@ -331,10 +333,15 @@ func main() {
 			if len(prefix) > 10 {
 				prefix = prefix[:10] + "…"
 			}
-			slog.Info("register-shop token stored", "shop", req.ShopDomain, "token_prefix", prefix)
+			slog.Info("register-shop token stored", "shop", req.ShopDomain, "token_prefix", prefix, "subscription_line_item_id", req.SubscriptionLineItemId)
 			if err := db.SetShopToken(req.ShopDomain, req.AccessToken); err != nil {
 				c.JSON(500, gin.H{"error": err.Error()})
 				return
+			}
+			if req.PlanName != "" {
+				if err := db.SyncShopPlanWithLineItem(req.ShopDomain, req.PlanName, req.SubscriptionLineItemId); err != nil {
+					slog.Error("failed to sync shop plan", "shop", req.ShopDomain, "plan", req.PlanName, "err", err)
+				}
 			}
 			c.JSON(200, gin.H{"ok": true})
 		})

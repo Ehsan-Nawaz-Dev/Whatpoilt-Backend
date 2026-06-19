@@ -55,6 +55,16 @@ func (w *Worker) process(_ context.Context, job models.PendingJob) {
 
 	cfg, _ := w.db.GetSettings(job.ShopDomain)
 
+	// ── Plan message limit ────────────────────────────────────────────────────
+	allowed, err := w.db.CanSendWhatsAppMessage(job.ShopDomain)
+	if err != nil {
+		log.Error("failed to check plan limits", "err", err)
+	} else if !allowed {
+		log.Info("plan message limit reached — skipping job")
+		w.db.CompleteJob(job.ID) // mark complete so it doesn't retry forever
+		return
+	}
+
 	// ── Frequency cap ─────────────────────────────────────────────────────────
 	if cfg.FrequencyCapPerDay > 0 {
 		count := w.db.MessageCountToday(job.ShopDomain, job.Phone)
