@@ -69,6 +69,37 @@ func (h *SupportHandler) ListTickets(c *gin.Context) {
 	c.JSON(http.StatusOK, list)
 }
 
+// PUT /admin/support/:id
+func (h *SupportHandler) ReplyTicket(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Reply  string `json:"reply"`
+		Status string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status == "" {
+		req.Status = "replied"
+	}
+	if err := h.db.ReplyToTicket(id, req.Reply, req.Status); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// DELETE /admin/support/:id
+func (h *SupportHandler) DeleteTicket(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.db.DeleteSupportTicket(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // PUT /admin/support-info
 func (h *SupportHandler) UpdateSupportInfo(c *gin.Context) {
 	var info models.SupportInfo

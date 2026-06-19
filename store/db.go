@@ -217,6 +217,9 @@ func (db *DB) migrate() error {
 		`ALTER TABLE settings ADD COLUMN sending_window_start INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN sending_window_end INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN win_back_inactive_days INTEGER DEFAULT 0`,
+		`ALTER TABLE support_messages ADD COLUMN reply TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE support_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'open'`,
+		`ALTER TABLE support_messages ADD COLUMN replied_at DATETIME`,
 	}
 
 	for _, s := range stmts {

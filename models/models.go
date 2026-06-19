@@ -612,11 +612,14 @@ type OptOutStat struct {
 
 // SupportMessage represents a merchant support ticket.
 type SupportMessage struct {
-	ID        string    `json:"id"`
-	Shop      string    `json:"shop_domain"`
-	Subject   string    `json:"subject"`
-	Message   string    `json:"message"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	Shop      string     `json:"shop_domain"`
+	Subject   string     `json:"subject"`
+	Message   string     `json:"message"`
+	Reply     string     `json:"reply"`
+	Status    string     `json:"status"` // "open" | "replied" | "closed"
+	RepliedAt *time.Time `json:"replied_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // FAQ represents a dynamic FAQ entry.

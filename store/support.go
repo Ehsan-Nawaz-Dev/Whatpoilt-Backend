@@ -19,7 +19,7 @@ func (db *DB) CreateSupportMessage(shop, subject, message string) error {
 
 func (db *DB) ListSupportMessages() ([]models.SupportMessage, error) {
 	rows, err := db.conn.Query(`
-		SELECT id,shop_domain,subject,message,created_at
+		SELECT id,shop_domain,subject,message,reply,status,replied_at,created_at
 		FROM support_messages ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -29,10 +29,29 @@ func (db *DB) ListSupportMessages() ([]models.SupportMessage, error) {
 	var out []models.SupportMessage
 	for rows.Next() {
 		var sm models.SupportMessage
-		rows.Scan(&sm.ID, &sm.Shop, &sm.Subject, &sm.Message, &sm.CreatedAt)
+		rows.Scan(&sm.ID, &sm.Shop, &sm.Subject, &sm.Message,
+			&sm.Reply, &sm.Status, &sm.RepliedAt, &sm.CreatedAt)
+		if sm.Status == "" {
+			sm.Status = "open"
+		}
 		out = append(out, sm)
 	}
 	return out, nil
+}
+
+func (db *DB) ReplyToTicket(id, reply, status string) error {
+	now := time.Now()
+	_, err := db.conn.Exec(`
+		UPDATE support_messages
+		SET reply=?, status=?, replied_at=?
+		WHERE id=?`,
+		reply, status, now, id)
+	return err
+}
+
+func (db *DB) DeleteSupportTicket(id string) error {
+	_, err := db.conn.Exec(`DELETE FROM support_messages WHERE id=?`, id)
+	return err
 }
 
 // ─── Support Info (Contact Details) ──────────────────────────────────────────

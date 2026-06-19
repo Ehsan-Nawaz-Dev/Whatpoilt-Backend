@@ -371,6 +371,8 @@ func main() {
 		adm.DELETE("/announcements/:id",     admH.DeleteAnnouncement)
 
 		adm.GET("/support",                  supportH.ListTickets)
+		adm.PUT("/support/:id",              supportH.ReplyTicket)
+		adm.DELETE("/support/:id",           supportH.DeleteTicket)
 		adm.PUT("/support-info",             supportH.UpdateSupportInfo)
 		adm.GET("/faqs",                     supportH.ListAdminFAQs)
 		adm.POST("/faqs",                    supportH.CreateFAQ)
