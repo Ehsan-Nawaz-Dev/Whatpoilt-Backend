@@ -53,10 +53,14 @@ func (h *ShopifyHandler) OrderCreated(c *gin.Context) {
 		go h.processExtraOrderTrigger(shop, models.TriggerCODOrder, order)
 	}
 
-	// Fire payment-pending nudge when the order is unpaid and NOT a COD order
-	// (COD orders are inherently "pending" until delivery, so they're excluded).
+	// Fire payment-pending nudge when the order is unpaid and NOT a COD order.
 	if isPaymentPending(order.FinancialStatus, order.PaymentGateway) {
 		go h.processExtraOrderTrigger(shop, models.TriggerPaymentPending, order)
+	}
+
+	// Fire bank-transfer instructions when customer chose bank/wire transfer.
+	if isBankTransferOrder(order.PaymentGateway) {
+		go h.processExtraOrderTrigger(shop, models.TriggerBankTransfer, order)
 	}
 
 	h.processOrder(c, shop, models.TriggerOrderCreated, order)
@@ -389,6 +393,27 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 			}
 		}
 	}
+
+	// Schedule a 24-hour no-reply reminder for order_created polls.
+	// The worker will skip it if the customer replies before the 24h window.
+	if trigger == models.TriggerOrderCreated {
+		var hasPoll bool
+		for _, la := range items {
+			if la.tmpl.MessageType == models.MessageTypePoll && !isPostConfirmationReply(la.auto.Name) {
+				hasPoll = true
+				break
+			}
+		}
+		if hasPoll {
+			reminderMsg, _, _ := h.resolveTemplateByName(shop, "Order Confirmation Reminder", vars, trigger)
+			if reminderMsg != "" {
+				now := time.Now()
+				if err := h.db.CreateReplyReminder(shop, phone, reminderMsg, "text", nil, now, now.Add(24*time.Hour)); err != nil {
+					slog.Error("schedule reply reminder", "shop", shop, "err", err)
+				}
+			}
+		}
+	}
 }
 
 func (h *ShopifyHandler) verifyAndRead(c *gin.Context) ([]byte, bool) {
@@ -434,6 +459,15 @@ func isPostConfirmationReply(name string) bool {
 	return strings.HasSuffix(name, "Post-Confirmation Reply") ||
 		strings.HasSuffix(name, "Cancellation Reply") ||
 		strings.HasSuffix(name, "Help Reply")
+}
+
+// isBankTransferOrder returns true for bank/wire-transfer payment gateways.
+// Excludes "manual" to avoid conflict with isCODOrder which already claims it.
+func isBankTransferOrder(gateway string) bool {
+	g := strings.ToLower(strings.TrimSpace(gateway))
+	return g == "bank_transfer" || g == "bank_deposit" ||
+		strings.Contains(g, "bank transfer") || strings.Contains(g, "wire transfer") ||
+		strings.Contains(g, "bank_transfer") || strings.Contains(g, "wire_transfer")
 }
 
 // isCODOrder returns true for payment gateways that represent cash-on-delivery.

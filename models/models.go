@@ -15,8 +15,10 @@ const (
 	TriggerCODOrder       TriggerType = "cod_order"       // cash-on-delivery confirmation poll
 	TriggerPaymentPending TriggerType = "payment_pending" // unpaid order payment nudge
 	TriggerRefundCreated  TriggerType = "refund_created"  // refund processed notification
-	TriggerWelcome        TriggerType = "welcome"         // new contact first opt-in
-	TriggerWinBack        TriggerType = "win_back"        // inactive customer re-engagement
+	TriggerWelcome        TriggerType = "welcome"          // new contact first opt-in
+	TriggerWinBack        TriggerType = "win_back"         // inactive customer re-engagement
+	TriggerBankTransfer   TriggerType = "bank_transfer"    // bank-transfer payment method
+	TriggerOrderReminder  TriggerType = "order_reminder"   // 24-hour no-reply follow-up
 )
 
 type MessageStatus string
@@ -290,6 +292,22 @@ var DefaultTemplates = []Template{
 		IsActive:    true,
 		IsDefault:   true,
 	},
+	// Bank Transfer
+	{
+		Name:        "Bank Transfer Instructions",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>>! 🏦\n\nThank you for your order #<<order_number>> (<<total>>).\n\nSince you selected bank transfer, please complete your payment using the details below:\n\n🏦 *Bank:* [Your Bank Name]\n💳 *Account:* [Your Account Number]\n🔢 *Sort/IBAN:* [Your IBAN]\n📝 *Reference:* Order #<<order_number>>\n\nYour order will be processed once we confirm your payment. Please send proof of payment by replying to this message.\n\nThank you! 💙",
+		IsActive:    true,
+		IsDefault:   true,
+	},
+	// Order Confirmation Reminder (24h no-reply follow-up)
+	{
+		Name:        "Order Confirmation Reminder",
+		MessageType: MessageTypeText,
+		Content:     "Hi <<name>>! 👋\n\nWe noticed you haven't confirmed your order #<<order_number>> (<<total>>) yet.\n\nIf you placed this order, no action is needed — it's already in progress! 🚀\n\nIf you have any questions or didn't place this order, please reply to this message and we'll help you right away.\n\nThank you for shopping with us! 💙",
+		IsActive:    true,
+		IsDefault:   true,
+	},
 }
 
 // Automation defines a rule that triggers WhatsApp messages based on Shopify events.
@@ -326,6 +344,20 @@ type PendingJob struct {
 	TemplateID  string      `json:"template_id"`
 	Attempts    int         `json:"attempts"`
 	MaxAttempts int         `json:"max_attempts"`
+}
+
+// ReplyReminder tracks 24-hour no-reply follow-up messages.
+type ReplyReminder struct {
+	ID             string    `json:"id"`
+	ShopDomain     string    `json:"shop_domain"`
+	Phone          string    `json:"phone"`
+	Message        string    `json:"message"`
+	MessageType    string    `json:"message_type"`
+	Options        []string  `json:"options"`
+	OriginalSentAt time.Time `json:"original_sent_at"`
+	SendAt         time.Time `json:"send_at"`
+	Status         string    `json:"status"` // pending | sent | skipped
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // MessageLog records every WhatsApp message attempt.

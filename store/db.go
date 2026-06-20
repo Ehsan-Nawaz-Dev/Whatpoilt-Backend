@@ -91,6 +91,21 @@ func (db *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 
+		// ── 24-hour reply reminders ──────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS reply_reminders (
+			id TEXT PRIMARY KEY,
+			shop_domain TEXT NOT NULL,
+			phone TEXT NOT NULL,
+			message TEXT NOT NULL,
+			message_type TEXT NOT NULL DEFAULT 'text',
+			options TEXT NOT NULL DEFAULT '[]',
+			original_sent_at DATETIME NOT NULL,
+			send_at DATETIME NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE INDEX IF NOT EXISTS idx_reply_reminders_shop_status ON reply_reminders(shop_domain, status, send_at)`,
+
 		// ── Shopify OAuth sessions (replaces Prisma/PostgreSQL) ─────────────
 		`CREATE TABLE IF NOT EXISTS shopify_sessions (
 			id         TEXT PRIMARY KEY,
@@ -669,6 +684,10 @@ var defaultAutomationDefs = []struct {
 	{"Welcome Series",              models.TriggerWelcome,        "Welcome Message",         0},
 	// Win-Back (1)
 	{"Win-Back Campaign",           models.TriggerWinBack,        "Win-Back Message",        0},
+	// Bank Transfer (1)
+	{"Bank Transfer Instructions",  models.TriggerBankTransfer,   "Bank Transfer Instructions", 0},
+	// Order Reminder (1)
+	{"Order Confirmation Reminder", models.TriggerOrderReminder,  "Order Confirmation Reminder", 0},
 }
 
 // SeedAutomations creates default automations for a shop if they don't exist.
@@ -924,6 +943,57 @@ func (db *DB) GetChatHistory(shop, phone string) ([]models.MessageLog, error) {
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// ─── Reply Reminders ─────────────────────────────────────────────────────────
+
+func (db *DB) CreateReplyReminder(shop, phone, message, msgType string, options []string, originalSentAt, sendAt time.Time) error {
+	if options == nil {
+		options = []string{}
+	}
+	optJSON, _ := json.Marshal(options)
+	_, err := db.conn.Exec(
+		`INSERT INTO reply_reminders(id,shop_domain,phone,message,message_type,options,original_sent_at,send_at,created_at)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		uuid.NewString(), shop, phone, message, msgType, string(optJSON), originalSentAt, sendAt, time.Now())
+	return err
+}
+
+func (db *DB) GetPendingReminders() ([]models.ReplyReminder, error) {
+	rows, err := db.conn.Query(
+		`SELECT id,shop_domain,phone,message,message_type,options,original_sent_at,send_at
+		 FROM reply_reminders
+		 WHERE status='pending' AND send_at<=?
+		 ORDER BY send_at ASC LIMIT 50`, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ReplyReminder
+	for rows.Next() {
+		var r models.ReplyReminder
+		var optJSON string
+		rows.Scan(&r.ID, &r.ShopDomain, &r.Phone, &r.Message, &r.MessageType, &optJSON, &r.OriginalSentAt, &r.SendAt)
+		json.Unmarshal([]byte(optJSON), &r.Options)
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// HasRepliedSince returns true if the customer sent a WhatsApp message to this shop after `since`.
+func (db *DB) HasRepliedSince(shop, phone string, since time.Time) bool {
+	phone = normalizePhone(phone)
+	var count int
+	db.conn.QueryRow(
+		`SELECT COUNT(*) FROM message_logs
+		 WHERE shop_domain=? AND contact_phone=? AND status='received' AND created_at>?`,
+		shop, phone, since).Scan(&count)
+	return count > 0
+}
+
+func (db *DB) CompleteReminder(id, status string) error {
+	_, err := db.conn.Exec(`UPDATE reply_reminders SET status=? WHERE id=?`, status, id)
+	return err
 }
 
 // ─── Pending Jobs (persistent queue) ─────────────────────────────────────────

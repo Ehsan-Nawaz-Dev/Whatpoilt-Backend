@@ -24,13 +24,17 @@ func New(db *store.DB, registry *whatsapp.Registry) *Worker {
 
 func (w *Worker) Run(ctx context.Context) {
 	ticker := time.NewTicker(w.poll)
+	reminderTicker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
+	defer reminderTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			w.tick(ctx)
+		case <-reminderTicker.C:
+			w.tickReminders(ctx)
 		}
 	}
 }
@@ -132,4 +136,46 @@ func nextWindowOpen(windowStartHour int) time.Time {
 		next = next.Add(24 * time.Hour)
 	}
 	return next
+}
+
+// tickReminders processes 24-hour no-reply reminders.
+// Skips the reminder if the customer has already replied since the original message was sent.
+func (w *Worker) tickReminders(_ context.Context) {
+	reminders, err := w.db.GetPendingReminders()
+	if err != nil {
+		slog.Error("worker: fetch reminders", "err", err)
+		return
+	}
+	for _, r := range reminders {
+		r := r
+		go func() {
+			log := slog.With("reminder", r.ID, "shop", r.ShopDomain, "phone", r.Phone)
+
+			// Skip if the customer has replied since the original confirmation was sent.
+			if w.db.HasRepliedSince(r.ShopDomain, r.Phone, r.OriginalSentAt) {
+				log.Info("customer replied — skipping reminder")
+				w.db.CompleteReminder(r.ID, "skipped")
+				return
+			}
+
+			mgr, err := w.registry.For(r.ShopDomain)
+			if err != nil {
+				log.Error("reminder: registry lookup", "err", err)
+				w.db.CompleteReminder(r.ID, "skipped")
+				return
+			}
+
+			cfg, _ := w.db.GetSettings(r.ShopDomain)
+			if err := mgr.SendMessageWithTyping(r.Phone, r.Message, cfg); err != nil {
+				log.Warn("reminder send failed", "err", err)
+				// Mark as skipped so it doesn't retry endlessly.
+				w.db.CompleteReminder(r.ID, "skipped")
+				return
+			}
+
+			w.db.CreateMessageLog(r.ShopDomain, "", r.Phone, "", r.Message)
+			w.db.CompleteReminder(r.ID, "sent")
+			log.Info("reminder sent")
+		}()
+	}
 }
