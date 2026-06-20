@@ -57,24 +57,14 @@ func (db *DB) FindSessionsByShop(shop string) ([]string, error) {
 }
 
 // GetFreshTokenForShop extracts the access token from the most recently updated
-// Shopify session for this shop. The library keeps shopify_sessions current via
-// token rotation, so this always returns a non-deprecated, valid token.
-// It prefers the offline session (id = "offline_{shop}") over online sessions.
+// Shopify offline session for this shop. Using offline sessions prevents
+// short-lived, user-bound online tokens from being returned, avoiding background 401s.
 func (db *DB) GetFreshTokenForShop(shop string) string {
-	// Try the offline session first — it's what webhook handlers need.
 	offlineID := "offline_" + shop
 	if raw := db.LoadSession(offlineID); raw != "" {
 		if tok := extractAccessToken(raw); tok != "" {
 			return tok
 		}
-	}
-	// Fall back to the most recently updated session of any type for this shop.
-	var raw string
-	db.conn.QueryRow(
-		`SELECT data FROM shopify_sessions WHERE shop=? ORDER BY updated_at DESC LIMIT 1`, shop,
-	).Scan(&raw)
-	if raw != "" {
-		return extractAccessToken(raw)
 	}
 	return ""
 }
