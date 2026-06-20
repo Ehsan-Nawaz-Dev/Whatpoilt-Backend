@@ -355,15 +355,26 @@ func main() {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
-			// Log token prefix so we can verify it's a fresh offline token
 			prefix := req.AccessToken
 			if len(prefix) > 10 {
 				prefix = prefix[:10] + "…"
 			}
-			slog.Info("register-shop token stored", "shop", req.ShopDomain, "token_prefix", prefix, "subscription_line_item_id", req.SubscriptionLineItemId)
-			if err := db.SetShopToken(req.ShopDomain, req.AccessToken); err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
-				return
+			// Only update shop_tokens if we don't already have a valid offline
+			// session token. The frontend calls register-shop on every page load
+			// with the online (short-lived) token from authenticate.admin().
+			// Writing that online token would overwrite the valid offline token
+			// and cause 401 errors on background API calls (order tagging, etc.).
+			existingOffline := db.GetFreshTokenForShop(req.ShopDomain)
+			if existingOffline != "" {
+				slog.Info("register-shop: offline session token already exists — skipping token update",
+					"shop", req.ShopDomain, "token_prefix", prefix)
+			} else {
+				slog.Info("register-shop: no offline session — storing token as fallback",
+					"shop", req.ShopDomain, "token_prefix", prefix)
+				if err := db.SetShopToken(req.ShopDomain, req.AccessToken); err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
 			}
 			if req.PlanName != "" {
 				if err := db.SyncShopPlanWithLineItem(req.ShopDomain, req.PlanName, req.SubscriptionLineItemId); err != nil {
