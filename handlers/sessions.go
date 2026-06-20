@@ -35,8 +35,9 @@ func (h *SessionHandler) Store(c *gin.Context) {
 		return
 	}
 	var s struct {
-		ID   string `json:"id"`
-		Shop string `json:"shop"`
+		ID          string `json:"id"`
+		Shop        string `json:"shop"`
+		AccessToken string `json:"accessToken"`
 	}
 	if err := json.Unmarshal(body, &s); err != nil || s.ID == "" || s.Shop == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id and shop required"})
@@ -45,6 +46,11 @@ func (h *SessionHandler) Store(c *gin.Context) {
 	if err := h.db.StoreSession(s.ID, s.Shop, string(body)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Mirror the access token to shop_tokens so webhook handlers (order tagging,
+	// refund lookups, etc.) always have a fresh token even without the register-shop call.
+	if s.AccessToken != "" {
+		_ = h.db.SetShopToken(s.Shop, s.AccessToken)
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

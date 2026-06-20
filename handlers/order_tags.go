@@ -43,17 +43,19 @@ func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) 
 func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger models.TriggerType) {
 	tag := h.tagForTrigger(shop, trigger)
 	if tag == "" {
+		slog.Debug("no tag configured for trigger — skipping", "shop", shop, "order", orderID, "trigger", trigger)
 		return
 	}
 	token := h.db.GetShopToken(shop)
 	if token == "" {
-		slog.Warn("no access token stored for shop — cannot tag order", "shop", shop, "order", orderID)
+		slog.Warn("no access token stored for shop — order tag skipped (merchant must open the app once to register the token)", "shop", shop, "order", orderID, "trigger", trigger)
 		return
 	}
+	slog.Info("tagging order", "shop", shop, "order", orderID, "trigger", trigger, "tag", tag)
 	if err := addShopifyOrderTag(shop, token, orderID, tag); err != nil {
 		slog.Error("order tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)
 	} else {
-		slog.Info("order tagged", "shop", shop, "order", orderID, "tag", tag)
+		slog.Info("order tagged successfully", "shop", shop, "order", orderID, "tag", tag)
 	}
 }
 
