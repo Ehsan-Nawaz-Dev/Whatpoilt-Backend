@@ -80,17 +80,21 @@ func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
 		return
 	}
 
-	// The refund webhook doesn't include customer details — fetch the parent order.
+	// Tag the refund's order immediately — independent of phone or automation status.
+	go h.tagOrderAsync(shop, refund.OrderID, models.TriggerRefundCreated)
+
+	// The refund webhook doesn't include customer details — fetch the parent order
+	// so we can send a WhatsApp notification. If we can't fetch it, tagging already fired.
 	token := h.db.GetShopToken(shop)
 	if token == "" {
-		slog.Warn("refund webhook: no access token for shop — cannot look up order", "shop", shop)
-		c.JSON(http.StatusOK, gin.H{"skipped": "no access token"})
+		slog.Warn("refund webhook: no access token — WA notification skipped, tag already queued", "shop", shop)
+		c.JSON(http.StatusOK, gin.H{"skipped": "no access token for WA notification"})
 		return
 	}
 	order, err := fetchShopifyOrder(shop, token, refund.OrderID)
 	if err != nil {
-		slog.Error("refund webhook: fetch order failed", "shop", shop, "order_id", refund.OrderID, "err", err)
-		c.JSON(http.StatusOK, gin.H{"skipped": "could not fetch order"})
+		slog.Error("refund webhook: fetch order failed — WA notification skipped", "shop", shop, "order_id", refund.OrderID, "err", err)
+		c.JSON(http.StatusOK, gin.H{"skipped": "could not fetch order for WA notification"})
 		return
 	}
 
@@ -116,7 +120,6 @@ func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
 		"refund_amount": refund.TotalRefunded(),
 	})
 
-	go h.tagOrderAsync(shop, refund.OrderID, models.TriggerRefundCreated)
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
 }
 
@@ -198,10 +201,15 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 }
 
 func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger models.TriggerType, order models.ShopifyOrder) {
+	slog.Info("webhook order received", "shop", shop, "trigger", trigger, "order", order.OrderNumber)
+
+	// Tag the order immediately — independent of phone number or automation status.
+	// Every order that fires a webhook should receive the trigger's Shopify tag.
+	go h.tagOrderAsync(shop, order.ID, trigger)
+
 	phone := order.ResolvePhone()
-	slog.Info("webhook order received", "shop", shop, "trigger", trigger, "order", order.OrderNumber, "has_phone", phone != "")
 	if phone == "" {
-		slog.Warn("skipping order — no phone number on customer", "shop", shop, "order", order.OrderNumber)
+		slog.Warn("skipping WA message — no phone number on order", "shop", shop, "order", order.OrderNumber)
 		c.JSON(http.StatusOK, gin.H{"skipped": "no phone on order"})
 		return
 	}
@@ -236,9 +244,6 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
 	})
-
-	// Tag the order in Shopify asynchronously — never blocks the webhook response.
-	go h.tagOrderAsync(shop, order.ID, trigger)
 
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
 }
@@ -434,6 +439,9 @@ func (h *ShopifyHandler) verifyAndRead(c *gin.Context) ([]byte, bool) {
 // processExtraOrderTrigger fires additional automations for a COD or payment-pending
 // order without touching the HTTP context (always called in a goroutine).
 func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.TriggerType, order models.ShopifyOrder) {
+	// Tag first — independent of phone or automation status.
+	h.tagOrderAsync(shop, order.ID, trigger)
+
 	phone := order.ResolvePhone()
 	if phone == "" {
 		return
@@ -443,14 +451,12 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 		return
 	}
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
-	// UpsertContactNew is idempotent — safe to call multiple times for the same order.
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
 	h.enqueueAutomations(shop, autos, phone, trigger, map[string]string{
 		"name":         name,
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
 	})
-	h.tagOrderAsync(shop, order.ID, trigger)
 }
 
 // isPostConfirmationReply returns true for automations that should be held as a
