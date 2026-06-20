@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -95,7 +96,8 @@ func addShopifyOrderTag(shop, token string, orderID int64, tag string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("shopify graphql status %d", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("shopify graphql status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var result struct {
