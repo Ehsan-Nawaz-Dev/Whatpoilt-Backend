@@ -884,21 +884,28 @@ type ChatSession struct {
 }
 
 func (db *DB) ListActiveChats(shop string) ([]ChatSession, error) {
+	// Subquery finds the most recent message per phone without window functions
+	// (compatible with SQLite < 3.25). LEFT JOIN ensures contacts who only sent
+	// incoming messages (no Shopify order, not in contacts table) still appear.
 	query := `
-		SELECT contact_phone, contact_name, content, status, created_at
-		FROM (
-			SELECT m.contact_phone, 
-			       COALESCE(c.name, '') as contact_name, 
-			       m.content, 
-			       m.status, 
-			       m.created_at,
-			       ROW_NUMBER() OVER (PARTITION BY m.contact_phone ORDER BY m.created_at DESC) as rn
-			FROM message_logs m
-			LEFT JOIN contacts c ON m.contact_phone = c.phone AND c.shop_domain = m.shop_domain
-			WHERE m.shop_domain = ?
-		)
-		WHERE rn = 1
-		ORDER BY created_at DESC
+		SELECT
+			m.contact_phone,
+			COALESCE(c.name, m.contact_phone) AS contact_name,
+			m.content AS last_message,
+			m.status  AS last_status,
+			m.created_at AS updated_at
+		FROM message_logs m
+		LEFT JOIN contacts c
+			ON c.phone = m.contact_phone AND c.shop_domain = m.shop_domain
+		WHERE m.shop_domain = ?
+		  AND m.created_at = (
+			SELECT MAX(m2.created_at)
+			FROM message_logs m2
+			WHERE m2.shop_domain = m.shop_domain
+			  AND m2.contact_phone = m.contact_phone
+		  )
+		GROUP BY m.contact_phone
+		ORDER BY m.created_at DESC
 	`
 	rows, err := db.conn.Query(query, shop)
 	if err != nil {
