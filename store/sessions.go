@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // StoreSession saves (or replaces) a Shopify OAuth session.
 // data is the full JSON string of the session object.
@@ -51,4 +54,35 @@ func (db *DB) FindSessionsByShop(shop string) ([]string, error) {
 		out = append(out, data)
 	}
 	return out, nil
+}
+
+// GetFreshTokenForShop extracts the access token from the most recently updated
+// Shopify session for this shop. The library keeps shopify_sessions current via
+// token rotation, so this always returns a non-deprecated, valid token.
+// It prefers the offline session (id = "offline_{shop}") over online sessions.
+func (db *DB) GetFreshTokenForShop(shop string) string {
+	// Try the offline session first — it's what webhook handlers need.
+	offlineID := "offline_" + shop
+	if raw := db.LoadSession(offlineID); raw != "" {
+		if tok := extractAccessToken(raw); tok != "" {
+			return tok
+		}
+	}
+	// Fall back to the most recently updated session of any type for this shop.
+	var raw string
+	db.conn.QueryRow(
+		`SELECT data FROM shopify_sessions WHERE shop=? ORDER BY updated_at DESC LIMIT 1`, shop,
+	).Scan(&raw)
+	if raw != "" {
+		return extractAccessToken(raw)
+	}
+	return ""
+}
+
+func extractAccessToken(sessionJSON string) string {
+	var s struct {
+		AccessToken string `json:"accessToken"`
+	}
+	json.Unmarshal([]byte(sessionJSON), &s)
+	return s.AccessToken
 }

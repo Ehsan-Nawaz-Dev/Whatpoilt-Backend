@@ -15,8 +15,13 @@ func (db *DB) SetShopToken(shop, token string) error {
 	return err
 }
 
-// GetShopToken returns the stored access token for a shop, or "" if not found.
+// GetShopToken returns the best available access token for a shop.
+// Priority: fresh session token (rotated by the Shopify library) → shop_tokens fallback.
+// Using the session as primary prevents deprecated permanent offline tokens from being used.
 func (db *DB) GetShopToken(shop string) string {
+	if tok := db.GetFreshTokenForShop(shop); tok != "" {
+		return tok
+	}
 	var t string
 	db.conn.QueryRow(`SELECT access_token FROM shop_tokens WHERE shop_domain=?`, shop).Scan(&t)
 	return t
