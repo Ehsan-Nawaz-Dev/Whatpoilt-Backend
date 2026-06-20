@@ -221,6 +221,7 @@ func main() {
 	inboxH := handlers.NewInboxHandler(registry, db)
 	supportH := handlers.NewSupportHandler(db)
 	shopTagsH := handlers.NewShopTagsHandler(db)
+	retagH    := handlers.NewRetagHandler(db)
 
 	// Seed default FAQs on startup
 	db.SeedDefaultFAQs()
@@ -283,8 +284,9 @@ func main() {
 		inbox.GET("/chats",       inboxH.ListActiveChats)
 		inbox.GET("/chats/:phone", inboxH.GetChatHistory)
 
-		api.GET("/order-tags",  shopTagsH.Get)
-		api.PUT("/order-tags",  shopTagsH.Update)
+		api.GET("/order-tags",    shopTagsH.Get)
+		api.PUT("/order-tags",    shopTagsH.Update)
+		api.POST("/retag-orders", retagH.Retag)
 
 		api.POST("/support", supportH.SubmitTicket)
 	}
