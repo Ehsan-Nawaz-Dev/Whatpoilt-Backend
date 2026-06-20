@@ -266,10 +266,10 @@ var taggableTriggers = []string{
 }
 
 var globalTagDefaults = map[string]string{
-	"order_created":   "⏳ Pending Confirmation",
+	"order_created":   "Pending Order Confirmation",
 	"order_fulfilled": "📦 Shipped - WA Notified",
 	"order_cancelled": "❌ Cancellation Sent",
-	"cod_order":       "💵 COD - Confirmation Sent",
+	"cod_order":       "Pending Order Confirmation",
 	"payment_pending": "⏳ Payment Pending",
 	"refund_created":  "💙 Refund Notified",
 	"bank_transfer":   "🏦 Bank Transfer Sent",

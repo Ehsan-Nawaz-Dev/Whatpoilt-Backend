@@ -13,10 +13,10 @@ import (
 
 // defaultOrderTags are the emoji tags applied when a WA message is sent for each trigger.
 var defaultOrderTags = map[models.TriggerType]string{
-	models.TriggerOrderCreated:   "⏳ Pending Confirmation",
+	models.TriggerOrderCreated:   "Pending Order Confirmation",
 	models.TriggerOrderFulfilled: "📦 Shipped - WA Notified",
 	models.TriggerOrderCancelled: "❌ Cancellation Sent",
-	models.TriggerCODOrder:       "💵 COD - Confirmation Sent",
+	models.TriggerCODOrder:       "Pending Order Confirmation",
 	models.TriggerPaymentPending: "⏳ Payment Pending",
 	models.TriggerRefundCreated:  "💙 Refund Notified",
 	models.TriggerBankTransfer:   "🏦 Bank Transfer Sent",

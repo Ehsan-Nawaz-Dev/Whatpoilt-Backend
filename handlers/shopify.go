@@ -210,6 +210,7 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 	phone := order.ResolvePhone()
 	if phone == "" {
 		slog.Warn("skipping WA message — no phone number on order", "shop", shop, "order", order.OrderNumber)
+		go h.TagOrderWithLabel(shop, order.ID, "No Whatsapp Found")
 		c.JSON(http.StatusOK, gin.H{"skipped": "no phone on order"})
 		return
 	}
@@ -233,7 +234,7 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 	// Revenue attribution: tag order if we sent a WA message to this customer in
 	// the last 24 hours (indicating WA influenced the conversion).
 	if h.db.WASentRecently(shop, phone, 24) {
-		go h.tagOrderWithLabel(shop, order.ID, "🤝 WA Influenced")
+		go h.TagOrderWithLabel(shop, order.ID, "🤝 WA Influenced")
 	}
 
 	// Stamp last_order_at so win-back can detect inactivity.
@@ -243,13 +244,14 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 		"name":         name,
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
+		"order_id":     fmt.Sprint(order.ID),
 	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
 }
 
-// tagOrderWithLabel adds a freeform string tag to a Shopify order (revenue attribution etc).
-func (h *ShopifyHandler) tagOrderWithLabel(shop string, orderID int64, tag string) {
+// TagOrderWithLabel adds a freeform string tag to a Shopify order (revenue attribution etc).
+func (h *ShopifyHandler) TagOrderWithLabel(shop string, orderID int64, tag string) {
 	token := h.db.GetShopToken(shop)
 	if token == "" {
 		return
@@ -386,12 +388,18 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 				noOptsVal = noOpts
 			}
 
+			var orderID int64
+			if idStr, ok := vars["order_id"]; ok {
+				fmt.Sscanf(idStr, "%d", &orderID)
+			}
+
 			err := h.db.StorePendingConfirmationExtended(
 				shop, phone,
 				yesMsg, yesType, yesOpts, positiveOption,
 				noMsgVal, noTypeVal, noOptsVal, negativeOption,
 				helpMsg, helpType, helpOpts, helpOption,
 				step2Yes, step2No, step2Help,
+				orderID, "Order Confirmed", "",
 			)
 			if err != nil {
 				slog.Error("store pending confirmation extended", "shop", shop, "err", err)
@@ -444,6 +452,7 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 
 	phone := order.ResolvePhone()
 	if phone == "" {
+		go h.TagOrderWithLabel(shop, order.ID, "No Whatsapp Found")
 		return
 	}
 	autos, _ := h.db.GetAutomationsByTrigger(shop, trigger)
@@ -456,6 +465,7 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 		"name":         name,
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
+		"order_id":     fmt.Sprint(order.ID),
 	})
 }
 

@@ -91,6 +91,11 @@ func main() {
 		if pc.ReplyMessage != "" {
 			dispatchPendingReply(shop, phone, pc)
 		}
+		if pc.OrderID != 0 && pc.TagOnYes != "" {
+			slog.Info("text confirmation — applying tag", "shop", shop, "order", pc.OrderID, "tag", pc.TagOnYes)
+			shopH := handlers.NewShopifyHandler(registry, db)
+			go shopH.TagOrderWithLabel(shop, pc.OrderID, pc.TagOnYes)
+		}
 	})
 	// Poll vote from customer: decrypted hashes are matched against trigger options —
 	// dispatches the correct yes, no, or help reply, and sets up nested Step 2 flows.
@@ -124,6 +129,7 @@ func main() {
 					pc.Step2NoMessage, "text", []string{}, "❌ No, keep my order",
 					pc.Step2HelpMessage, "text", []string{}, "📞 I need to speak to someone",
 					"", "", "",
+					pc.OrderID, "Order Cancel", "Order Confirmed",
 				)
 				if err != nil {
 					slog.Error("failed to store step 2 pending confirmation", "err", err)
@@ -141,6 +147,21 @@ func main() {
 				ReplyType:    typeToSend,
 				ReplyOptions: optsToSend,
 			})
+		}
+
+		// Apply order tag based on voted branch
+		if pc.OrderID != 0 {
+			var tagToApply string
+			if pc.VotedBranch == "yes" {
+				tagToApply = pc.TagOnYes
+			} else if pc.VotedBranch == "no" {
+				tagToApply = pc.TagOnNo
+			}
+			if tagToApply != "" {
+				slog.Info("applying order tag from poll response", "shop", shop, "order_id", pc.OrderID, "tag", tagToApply)
+				shopH := handlers.NewShopifyHandler(registry, db)
+				go shopH.TagOrderWithLabel(shop, pc.OrderID, tagToApply)
+			}
 		}
 	})
 	// Log incoming WhatsApp messages from customers

@@ -242,6 +242,9 @@ func (db *DB) migrate() error {
 		`ALTER TABLE support_messages ADD COLUMN reply TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE support_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'open'`,
 		`ALTER TABLE support_messages ADD COLUMN replied_at DATETIME`,
+		`ALTER TABLE pending_confirmations ADD COLUMN order_id INTEGER DEFAULT 0`,
+		`ALTER TABLE pending_confirmations ADD COLUMN tag_on_yes TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pending_confirmations ADD COLUMN tag_on_no TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, s := range stmts {
@@ -1631,6 +1634,9 @@ type PendingConfirmation struct {
 	Step2HelpMessage    string
 
 	VotedBranch         string // "yes" | "no" | "help"
+	OrderID             int64
+	TagOnYes            string
+	TagOnNo             string
 }
 
 // normalizePhone strips formatting so Shopify phones (e.g. "+1 415-555-2671")
@@ -1661,6 +1667,7 @@ func (db *DB) StorePendingConfirmationExtended(
 	noMsg, noType string, noOpts []string, noOption string,
 	helpMsg, helpType string, helpOpts []string, helpOption string,
 	step2Yes, step2No, step2Help string,
+	orderID int64, tagOnYes, tagOnNo string,
 ) error {
 	phone = normalizePhone(phone)
 	slog.Info("storing pending confirmation extended",
@@ -1668,7 +1675,8 @@ func (db *DB) StorePendingConfirmationExtended(
 		"yes_option", yesOption,
 		"no_option", noOption,
 		"help_option", helpOption,
-		"has_step2_yes", step2Yes != "")
+		"has_step2_yes", step2Yes != "",
+		"order_id", orderID)
 	
 	yesOptJSON, _ := json.Marshal(yesOpts)
 	noOptJSON, _ := json.Marshal(noOpts)
@@ -1681,8 +1689,9 @@ func (db *DB) StorePendingConfirmationExtended(
 		  reply_no_message, reply_no_type, reply_no_options, no_option,
 		  reply_help_message, reply_help_type, reply_help_options, help_option,
 		  step2_yes_message, step2_no_message, step2_help_message,
+		  order_id, tag_on_yes, tag_on_no,
 		  expires_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','+24 hours'))
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','+24 hours'))
 		 ON CONFLICT(shop_domain,phone) DO UPDATE SET
 		   reply_message=excluded.reply_message,
 		   reply_type=excluded.reply_type,
@@ -1699,12 +1708,16 @@ func (db *DB) StorePendingConfirmationExtended(
 		   step2_yes_message=excluded.step2_yes_message,
 		   step2_no_message=excluded.step2_no_message,
 		   step2_help_message=excluded.step2_help_message,
+		   order_id=excluded.order_id,
+		   tag_on_yes=excluded.tag_on_yes,
+		   tag_on_no=excluded.tag_on_no,
 		   expires_at=excluded.expires_at`,
 		uuid.NewString(), shop, phone,
 		yesMsg, yesType, string(yesOptJSON), yesOption,
 		noMsg, noType, string(noOptJSON), noOption,
 		helpMsg, helpType, string(helpOptJSON), helpOption,
 		step2Yes, step2No, step2Help,
+		orderID, tagOnYes, tagOnNo,
 	)
 	return err
 }
@@ -1717,6 +1730,7 @@ func (db *DB) StorePendingConfirmation(shop, phone, message, msgType string, opt
 		"", "text", []string{}, "",
 		"", "text", []string{}, "",
 		"", "", "",
+		0, "", "",
 	)
 }
 
@@ -1732,7 +1746,8 @@ func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *
 		        reply_message, reply_type, reply_options, COALESCE(trigger_option,''),
 		        reply_no_message, reply_no_type, reply_no_options, COALESCE(no_option,''),
 		        reply_help_message, reply_help_type, reply_help_options, COALESCE(help_option,''),
-		        COALESCE(step2_yes_message,''), COALESCE(step2_no_message,''), COALESCE(step2_help_message,'')
+		        COALESCE(step2_yes_message,''), COALESCE(step2_no_message,''), COALESCE(step2_help_message,''),
+		        COALESCE(order_id, 0), COALESCE(tag_on_yes, ''), COALESCE(tag_on_no, '')
 		 FROM pending_confirmations
 		 WHERE shop_domain=? AND phone=? AND expires_at > datetime('now')`,
 		shop, phone,
@@ -1742,6 +1757,7 @@ func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *
 		&pc.ReplyNoMessage, &pc.ReplyNoType, &noOptsJSON, &pc.NoOption,
 		&pc.ReplyHelpMessage, &pc.ReplyHelpType, &helpOptsJSON, &pc.HelpOption,
 		&pc.Step2YesMessage, &pc.Step2NoMessage, &pc.Step2HelpMessage,
+		&pc.OrderID, &pc.TagOnYes, &pc.TagOnNo,
 	)
 	if err != nil {
 		slog.Info("pop pending confirmation: no entry found (or expired)", "shop", shop, "phone", phone)
@@ -1757,7 +1773,8 @@ func (db *DB) PopPendingConfirmation(shop, phone string, votedHashes [][]byte) *
 		"no_option", pc.NoOption,
 		"help_option", pc.HelpOption,
 		"via_poll_vote", votedHashes != nil,
-		"voted_hash_count", len(votedHashes))
+		"voted_hash_count", len(votedHashes),
+		"order_id", pc.OrderID)
 
 	if votedHashes == nil {
 		// Text-message path: entries that require a specific poll vote must NOT fire here.
