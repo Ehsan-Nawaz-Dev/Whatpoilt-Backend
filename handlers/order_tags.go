@@ -19,23 +19,29 @@ var defaultOrderTags = map[models.TriggerType]string{
 	models.TriggerCODOrder:       "💵 COD - Confirmation Sent",
 	models.TriggerPaymentPending: "⏳ Payment Pending",
 	models.TriggerRefundCreated:  "💙 Refund Notified",
+	models.TriggerBankTransfer:   "🏦 Bank Transfer Sent",
+	models.TriggerWelcome:        "👋 Welcome Sent",
 }
 
-// tagForTrigger reads the operator-configured tag from admin_config,
-// falling back to the built-in default.
-func (h *ShopifyHandler) tagForTrigger(trigger models.TriggerType) string {
+// tagForTrigger resolves the tag for a trigger: per-shop config → global admin config → built-in default.
+func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) string {
 	key := "order_tag_" + string(trigger)
-	tag := h.db.GetAdminConfigValue(key)
-	if tag == "" {
-		return defaultOrderTags[trigger]
+	// 1. Per-shop override set by the merchant from the Shopify app settings.
+	if tag := h.db.GetShopOrderTag(shop, key); tag != "" {
+		return tag
 	}
-	return tag
+	// 2. Global override set by the platform admin.
+	if tag := h.db.GetAdminConfigValue(key); tag != "" {
+		return tag
+	}
+	// 3. Built-in default.
+	return defaultOrderTags[trigger]
 }
 
 // tagOrderAsync adds the trigger's tag to a Shopify order via GraphQL.
 // Always called in a goroutine — failures are logged, never fatal.
 func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger models.TriggerType) {
-	tag := h.tagForTrigger(trigger)
+	tag := h.tagForTrigger(shop, trigger)
 	if tag == "" {
 		return
 	}

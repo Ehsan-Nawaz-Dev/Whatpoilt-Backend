@@ -253,23 +253,38 @@ func (h *AdminHandler) DeleteAnnouncement(c *gin.Context) {
 
 // ─── Order Tags ───────────────────────────────────────────────────────────────
 
+// taggableTriggers lists every trigger that has a Shopify order ID and can receive a tag.
+var taggableTriggers = []string{
+	"order_created",
+	"order_fulfilled",
+	"order_cancelled",
+	"cod_order",
+	"payment_pending",
+	"refund_created",
+	"bank_transfer",
+	"welcome",
+}
+
+var globalTagDefaults = map[string]string{
+	"order_created":   "⏳ Pending Confirmation",
+	"order_fulfilled": "📦 Shipped - WA Notified",
+	"order_cancelled": "❌ Cancellation Sent",
+	"cod_order":       "💵 COD - Confirmation Sent",
+	"payment_pending": "⏳ Payment Pending",
+	"refund_created":  "💙 Refund Notified",
+	"bank_transfer":   "🏦 Bank Transfer Sent",
+	"welcome":         "👋 Welcome Sent",
+}
+
 // GET /admin/order-tags
 func (h *AdminHandler) GetOrderTags(c *gin.Context) {
-	tags := map[string]string{
-		"order_created":   h.db.GetAdminConfigValue("order_tag_order_created"),
-		"order_fulfilled": h.db.GetAdminConfigValue("order_tag_order_fulfilled"),
-		"order_cancelled": h.db.GetAdminConfigValue("order_tag_order_cancelled"),
-	}
-	// Fill defaults for any that aren't customised yet.
-	defaults := map[string]string{
-		"order_created":   "⏳ Pending Confirmation",
-		"order_fulfilled": "📦 Shipped - WA Notified",
-		"order_cancelled": "❌ Cancellation Sent",
-	}
-	for k, def := range defaults {
-		if tags[k] == "" {
-			tags[k] = def
+	tags := make(map[string]string, len(taggableTriggers))
+	for _, trigger := range taggableTriggers {
+		v := h.db.GetAdminConfigValue("order_tag_" + trigger)
+		if v == "" {
+			v = globalTagDefaults[trigger]
 		}
+		tags[trigger] = v
 	}
 	c.JSON(200, tags)
 }
@@ -281,9 +296,12 @@ func (h *AdminHandler) UpdateOrderTags(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	allowed := []string{"order_created", "order_fulfilled", "order_cancelled"}
-	for _, trigger := range allowed {
-		if tag, ok := req[trigger]; ok {
+	allowed := make(map[string]bool, len(taggableTriggers))
+	for _, t := range taggableTriggers {
+		allowed[t] = true
+	}
+	for trigger, tag := range req {
+		if allowed[trigger] {
 			h.db.SetAdminConfigValue("order_tag_"+trigger, tag)
 		}
 	}

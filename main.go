@@ -220,6 +220,7 @@ func main() {
 	brdH  := handlers.NewBroadcastHandler(db, registry)
 	inboxH := handlers.NewInboxHandler(registry, db)
 	supportH := handlers.NewSupportHandler(db)
+	shopTagsH := handlers.NewShopTagsHandler(db)
 
 	// Seed default FAQs on startup
 	db.SeedDefaultFAQs()
@@ -281,6 +282,9 @@ func main() {
 		inbox := api.Group("/inbox")
 		inbox.GET("/chats",       inboxH.ListActiveChats)
 		inbox.GET("/chats/:phone", inboxH.GetChatHistory)
+
+		api.GET("/order-tags",  shopTagsH.Get)
+		api.PUT("/order-tags",  shopTagsH.Update)
 
 		api.POST("/support", supportH.SubmitTicket)
 	}

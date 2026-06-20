@@ -280,3 +280,14 @@ func (db *DB) DeleteAnnouncement(id string) error {
 	_, err := db.conn.Exec(`DELETE FROM announcements WHERE id=?`, id)
 	return err
 }
+
+// ─── Per-shop Order Tags ──────────────────────────────────────────────────────
+// Stored in admin_config with key = "shop:{domain}:{tagKey}" so no new table is needed.
+
+func (db *DB) GetShopOrderTag(shop, tagKey string) string {
+	return db.GetAdminConfigValue("shop:" + shop + ":" + tagKey)
+}
+
+func (db *DB) SetShopOrderTag(shop, tagKey, value string) error {
+	return db.SetAdminConfigValue("shop:"+shop+":"+tagKey, value)
+}
