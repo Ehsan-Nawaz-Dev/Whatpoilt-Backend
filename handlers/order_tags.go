@@ -81,7 +81,7 @@ func addShopifyOrderTag(shop, token string, orderID int64, tag string) error {
 		},
 	})
 
-	url := fmt.Sprintf("https://%s/admin/api/2024-01/graphql.json", shop)
+	url := fmt.Sprintf("https://%s/admin/api/2026-01/graphql.json", shop)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return err

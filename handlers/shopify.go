@@ -503,7 +503,7 @@ func isPaymentPending(financialStatus, gateway string) bool {
 // fetchShopifyOrder retrieves a single order from the Shopify REST Admin API.
 // Used by the refund webhook to obtain customer contact details.
 func fetchShopifyOrder(shop, token string, orderID int64) (*models.ShopifyOrder, error) {
-	url := fmt.Sprintf("https://%s/admin/api/2024-01/orders/%d.json?fields=id,order_number,total_price,currency,phone,customer,shipping_address,billing_address", shop, orderID)
+	url := fmt.Sprintf("https://%s/admin/api/2026-01/orders/%d.json?fields=id,order_number,total_price,currency,phone,customer,shipping_address,billing_address", shop, orderID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
