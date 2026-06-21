@@ -256,9 +256,23 @@ func (h *ShopifyHandler) TagOrderWithLabel(shop string, orderID int64, tag strin
 	if token == "" {
 		return
 	}
-	if err := addShopifyOrderTag(shop, token, orderID, tag); err != nil {
-		slog.Error("revenue attribution tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)
+	err := addShopifyOrderTag(shop, token, orderID, tag)
+	if err == nil {
+		return
 	}
+	if isDeprecatedTokenError(err) {
+		newToken, exchErr := exchangeForRotatingToken(shop, token)
+		if exchErr != nil {
+			slog.Error("token exchange failed", "shop", shop, "err", exchErr)
+			return
+		}
+		_ = h.db.SetShopToken(shop, newToken)
+		if err2 := addShopifyOrderTag(shop, newToken, orderID, tag); err2 != nil {
+			slog.Error("label tag failed after token exchange", "shop", shop, "order", orderID, "tag", tag, "err", err2)
+		}
+		return
+	}
+	slog.Error("label tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)
 }
 
 func (h *ShopifyHandler) resolveTemplateByName(shop string, name string, vars map[string]string, trigger models.TriggerType) (string, string, []string) {

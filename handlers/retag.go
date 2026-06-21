@@ -39,6 +39,20 @@ func (h *RetagHandler) Retag(c *gin.Context) {
 		return
 	}
 
+	// Auto-exchange deprecated non-expiring token (shpat_ prefix) before bulk tagging.
+	if isDeprecatedTokenByPrefix(token) {
+		slog.Warn("retag: deprecated non-expiring token detected — exchanging", "shop", shop, "token_prefix", tokenPrefix(token))
+		newToken, exchErr := exchangeForRotatingToken(shop, token)
+		if exchErr != nil {
+			slog.Error("retag: token exchange failed", "shop", shop, "err", exchErr)
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Token exchange failed: " + exchErr.Error()})
+			return
+		}
+		_ = h.db.SetShopToken(shop, newToken)
+		slog.Info("retag: token exchanged successfully", "shop", shop, "new_token_prefix", tokenPrefix(newToken))
+		token = newToken
+	}
+
 	orders, err := fetchRecentOrders(shop, token, 250)
 	if err != nil {
 		slog.Error("retag: fetch orders failed", "shop", shop, "err", err)
