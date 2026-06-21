@@ -93,7 +93,7 @@ func retagForOrder(o shopifyOrderSummary) string {
 
 func fetchRecentOrders(shop, token string, limit int) ([]shopifyOrderSummary, error) {
 	url := fmt.Sprintf(
-		"https://%s/admin/api/2026-01/orders.json?limit=%d&status=any&fields=id,financial_status,fulfillment_status,payment_gateway,cancelled_at",
+		"https://%s/admin/api/2024-01/orders.json?limit=%d&status=any&fields=id,financial_status,fulfillment_status,payment_gateway,cancelled_at",
 		shop, limit,
 	)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
