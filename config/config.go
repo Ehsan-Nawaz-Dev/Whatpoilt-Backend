@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Port             string
 	Environment      string
+	ShopifyAPIKey    string
 	ShopifyAPISecret string
 	BackendAPIKey    string // shared secret between frontend and this server
 	AdminAPIKey      string // secret for the admin panel
@@ -27,6 +28,7 @@ func Load() {
 	App = &Config{
 		Port:             getEnv("PORT", "8080"),
 		Environment:      getEnv("ENVIRONMENT", "development"),
+		ShopifyAPIKey:    getEnv("SHOPIFY_API_KEY", ""),
 		ShopifyAPISecret: getEnv("SHOPIFY_API_SECRET", ""),
 		BackendAPIKey:    getEnv("BACKEND_API_KEY", ""),
 		AdminAPIKey:      getEnv("ADMIN_API_KEY", ""),
