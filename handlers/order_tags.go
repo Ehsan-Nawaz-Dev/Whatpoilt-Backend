@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/whatpilot/backend/models"
+	"github.com/whatpilot/backend/store"
 )
 
 // defaultOrderTags are the emoji tags applied when a WA message is sent for each trigger.
@@ -38,12 +39,11 @@ func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) 
 
 // tagOrderAsync adds the trigger's tag to a Shopify order via GraphQL.
 //
-// If the stored token is rejected by Shopify (an expired/invalid token, or a
-// deprecated non-expiring token that the Admin API no longer accepts), the shop
-// is flagged for re-authorization. There is no backend-only recovery: minting a
-// new rotating token requires the merchant to re-open the app so the embedded
-// OAuth/token-exchange flow can run with a real session token. The frontend
-// surfaces a "Reconnect Shopify" banner for the flagged shop.
+// If Shopify rejects the stored token because it's a legacy non-expiring token,
+// it is migrated in place to an expiring token (+ refresh token) and the tag is
+// retried — fully automatic, no merchant interaction. Any other auth failure
+// (revoked/invalid token, missing scope) flags the shop for re-authorization so
+// the frontend can surface a "Reconnect Shopify" prompt.
 func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger models.TriggerType) {
 	tag := h.tagForTrigger(shop, trigger)
 	if tag == "" {
@@ -65,32 +65,46 @@ func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger model
 		return
 	}
 
+	// Legacy non-expiring token: migrate it to an expiring token in place and retry.
+	// Fully automatic and backend-only — no merchant interaction required.
+	if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
+		if err2 := addShopifyOrderTag(shop, newToken, orderID, tag); err2 != nil {
+			slog.Error("order tag failed after token migration", "shop", shop, "order", orderID, "tag", tag, "err", err2)
+			return
+		}
+		slog.Info("order tagged successfully after token migration", "shop", shop, "order", orderID, "tag", tag)
+		return
+	}
+
+	// Any other auth failure (revoked/invalid token, missing scope) genuinely needs
+	// the merchant to reconnect — flag it.
 	if isReauthRequiredError(err) {
 		slog.Warn("shopify rejected access token — flagging shop for re-auth",
 			"shop", shop, "order", orderID, "token_prefix", tokenPrefix(token), "err", err)
-		h.flagAndForceReexchange(shop, err)
+		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
 		return
 	}
 
 	slog.Error("order tag failed", "shop", shop, "order", orderID, "tag", tag, "token_prefix", tokenPrefix(token), "err", err)
 }
 
-// flagAndForceReexchange marks the shop for re-auth and, if Shopify rejected the
-// token because the *stored* offline token is the wrong kind (a legacy
-// non-expiring token) or is no longer valid, deletes the cached offline session.
-//
-// This is essential: the embedded app's authenticate.admin() reuses a stored
-// offline session as long as it exists and hasn't expired. A non-expiring token
-// has no expiry, so it is never seen as stale and is never re-exchanged — the
-// merchant can reopen the app forever and keep sending the same dead token.
-// Deleting the session forces a fresh token exchange (→ a proper expiring offline
-// token) on the next app load, which then mirrors back and clears the flag.
-func (h *ShopifyHandler) flagAndForceReexchange(shop string, err error) {
-	_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
-	if isStaleOfflineToken(err) {
-		_ = h.db.DeleteSession("offline_" + shop)
-		slog.Info("discarded stale offline session — next app load will re-exchange for a fresh expiring token", "shop", shop)
+// migrateLegacyToken handles the "Non-expiring access tokens are no longer accepted"
+// rejection by exchanging the legacy token for an expiring one (+ refresh token) via
+// store.MigrateToExpiringToken. Returns the new token and true on success; (("",false)
+// when the error isn't a legacy-token rejection or the migration itself fails (the
+// caller then falls through to flagging for re-auth).
+func migrateLegacyToken(db *store.DB, shop, oldToken string, err error) (string, bool) {
+	if !isLegacyNonExpiringToken(err) {
+		return "", false
 	}
+	slog.Warn("legacy non-expiring token rejected — migrating to expiring token", "shop", shop, "token_prefix", tokenPrefix(oldToken))
+	newToken, mErr := db.MigrateToExpiringToken(shop, oldToken)
+	if mErr != nil {
+		slog.Error("token migration failed", "shop", shop, "err", mErr)
+		return "", false
+	}
+	slog.Info("token migrated to expiring offline token", "shop", shop, "new_token_prefix", tokenPrefix(newToken))
+	return newToken, true
 }
 
 // reauth reasons surfaced to the merchant via /api/settings/auth-status.
@@ -115,20 +129,13 @@ func isReauthRequiredError(err error) bool {
 		strings.Contains(msg, "unrecognized login")
 }
 
-// isStaleOfflineToken reports whether the error means the *stored* offline token
-// itself is unusable (a legacy non-expiring token Shopify no longer accepts, or a
-// revoked/invalid token) — i.e. the cached offline session must be discarded so
-// the app re-exchanges for a fresh one. This is narrower than isReauthRequiredError:
-// a generic 403 (e.g. a missing scope) should flag for re-auth but NOT delete the
-// session, since re-exchange wouldn't change the outcome.
-func isStaleOfflineToken(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "Non-expiring access tokens") ||
-		strings.Contains(msg, "Invalid API key or access token") ||
-		strings.Contains(msg, "unrecognized login")
+// isLegacyNonExpiringToken reports whether Shopify rejected the call specifically
+// because the stored token is a legacy non-expiring offline token, which can be
+// migrated in place to an expiring one (see migrateLegacyToken). This is narrower
+// than isReauthRequiredError: a 401/403 from a revoked token or missing scope is
+// NOT migratable and must fall through to flagging for re-auth.
+func isLegacyNonExpiringToken(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Non-expiring access tokens")
 }
 
 func tokenPrefix(token string) string {

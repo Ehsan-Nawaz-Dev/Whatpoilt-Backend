@@ -41,22 +41,25 @@ func (h *RetagHandler) Retag(c *gin.Context) {
 
 	orders, err := fetchRecentOrders(shop, token, 250)
 	if err != nil {
-		if isReauthRequiredError(err) {
-			slog.Warn("retag: shopify rejected access token — flagging shop for re-auth", "shop", shop, "err", err)
-			_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
-			if isStaleOfflineToken(err) {
-				_ = h.db.DeleteSession("offline_" + shop)
-				slog.Info("retag: discarded stale offline session — next app load will re-exchange for a fresh expiring token", "shop", shop)
+		// Legacy non-expiring token: migrate to an expiring token and re-fetch.
+		if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
+			token = newToken
+			orders, err = fetchRecentOrders(shop, token, 250)
+		}
+		if err != nil {
+			if isReauthRequiredError(err) {
+				slog.Warn("retag: shopify rejected access token — flagging shop for re-auth", "shop", shop, "err", err)
+				_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+				c.JSON(http.StatusUnprocessableEntity, gin.H{
+					"error":       "Shopify connection expired. Please reconnect your store, then try again.",
+					"needsReauth": true,
+				})
+				return
 			}
-			c.JSON(http.StatusUnprocessableEntity, gin.H{
-				"error":       "Shopify connection expired. Please reconnect your store, then try again.",
-				"needsReauth": true,
-			})
+			slog.Error("retag: fetch orders failed", "shop", shop, "err", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch orders from Shopify: " + err.Error()})
 			return
 		}
-		slog.Error("retag: fetch orders failed", "shop", shop, "err", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch orders from Shopify: " + err.Error()})
-		return
 	}
 
 	tagged, failed := 0, 0

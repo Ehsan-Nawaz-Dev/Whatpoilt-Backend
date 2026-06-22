@@ -48,6 +48,91 @@ func (db *DB) DeleteSessions(ids []string) error {
 	return nil
 }
 
+// MigrateToExpiringToken exchanges a legacy non-expiring offline access token for
+// an expiring offline access token + refresh token, using Shopify's token-exchange
+// grant with subject_token_type = offline-access-token and expiring=1.
+//
+// This is the supported, backend-only migration — unlike the embedded token
+// exchange, it takes the existing offline token directly and needs no App Bridge
+// session token, so it runs from a webhook with no merchant interaction. Shopify
+// revokes the old non-expiring token on success, so the new token is persisted
+// (offline session + shop_tokens) before returning. The stored refresh_token then
+// lets GetFreshTokenForShop / RefreshOfflineTokenForShop renew it indefinitely.
+func (db *DB) MigrateToExpiringToken(shop, nonExpiringToken string) (string, error) {
+	if config.App.ShopifyAPIKey == "" || config.App.ShopifyAPISecret == "" {
+		return "", fmt.Errorf("SHOPIFY_API_KEY or SHOPIFY_API_SECRET not set")
+	}
+
+	const offlineTokenType = "urn:shopify:params:oauth:token-type:offline-access-token"
+	payload, _ := json.Marshal(map[string]string{
+		"client_id":            config.App.ShopifyAPIKey,
+		"client_secret":        config.App.ShopifyAPISecret,
+		"grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
+		"subject_token":        nonExpiringToken,
+		"subject_token_type":   offlineTokenType,
+		"requested_token_type": offlineTokenType,
+		"expiring":             "1",
+	})
+
+	url := fmt.Sprintf("https://%s/admin/oauth/access_token", shop)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token migration HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var r struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", fmt.Errorf("token migration: parse response: %w", err)
+	}
+	if r.AccessToken == "" {
+		return "", fmt.Errorf("token migration: empty access_token in response: %s", string(body))
+	}
+
+	// Persist into the offline session (preserving any existing fields like scope)
+	// so the background refresh machinery can renew it, then mirror to shop_tokens.
+	offlineID := "offline_" + shop
+	session := map[string]interface{}{}
+	if raw := db.LoadSession(offlineID); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &session)
+	}
+	session["id"] = offlineID
+	session["shop"] = shop
+	session["state"] = ""
+	session["isOnline"] = false
+	session["accessToken"] = r.AccessToken
+	if r.RefreshToken != "" {
+		session["refreshToken"] = r.RefreshToken
+	}
+	if r.ExpiresIn > 0 {
+		session["expires"] = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+	newData, _ := json.Marshal(session)
+	if err := db.StoreSession(offlineID, shop, string(newData)); err != nil {
+		return "", fmt.Errorf("token migration: store session: %w", err)
+	}
+	_ = db.SetShopToken(shop, r.AccessToken)
+	_ = db.ClearShopReauth(shop)
+
+	return r.AccessToken, nil
+}
+
 // TokenHealth describes a shop's background-refresh readiness.
 //
 // A shop can only have its Shopify token renewed silently from a background

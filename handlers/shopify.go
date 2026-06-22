@@ -261,10 +261,16 @@ func (h *ShopifyHandler) TagOrderWithLabel(shop string, orderID int64, tag strin
 	if err == nil {
 		return
 	}
+	if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
+		if err2 := addShopifyOrderTag(shop, newToken, orderID, tag); err2 != nil {
+			slog.Error("label tag failed after token migration", "shop", shop, "order", orderID, "tag", tag, "err", err2)
+		}
+		return
+	}
 	if isReauthRequiredError(err) {
 		slog.Warn("shopify rejected access token — flagging shop for re-auth",
 			"shop", shop, "order", orderID, "err", err)
-		h.flagAndForceReexchange(shop, err)
+		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
 		return
 	}
 	slog.Error("label tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)
