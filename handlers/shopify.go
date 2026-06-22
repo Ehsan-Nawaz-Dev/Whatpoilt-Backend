@@ -110,7 +110,7 @@ func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
 		return
 	}
 
-	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
+	name := order.ResolveName()
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
 
 	h.enqueueAutomations(shop, autos, phone, models.TriggerRefundCreated, refund.OrderID, map[string]string{
@@ -188,7 +188,10 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 		discountCartURL += "?discount=SAVE10"
 	}
 
-	name := strings.TrimSpace(fmt.Sprintf("%s %s", checkout.Customer.FirstName, checkout.Customer.LastName))
+	name := checkout.BillingAddress.FullName()
+	if name == "" {
+		name = strings.TrimSpace(fmt.Sprintf("%s %s", checkout.Customer.FirstName, checkout.Customer.LastName))
+	}
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(checkout.Customer.ID))
 
 	h.enqueueAutomations(shop, automations, phone, models.TriggerAbandonedCart, 0, map[string]string{
@@ -223,7 +226,7 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 		return
 	}
 
-	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
+	name := order.ResolveName()
 
 	// Welcome series: fire TriggerWelcome automations only for brand-new contacts.
 	isNew := h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
@@ -493,7 +496,7 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 	if len(autos) == 0 {
 		return
 	}
-	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
+	name := order.ResolveName()
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
 	h.enqueueAutomations(shop, autos, phone, trigger, order.ID, map[string]string{
 		"name":         name,

@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -481,6 +482,24 @@ func (o *ShopifyOrder) ResolvePhone() string {
 	return ""
 }
 
+// ResolveName returns the name to greet the customer with, preferring the name
+// entered at checkout (shipping then billing address) over the customer-account
+// name. Shopify links an order to the existing customer record by email, so the
+// account keeps its original name even when a different name is typed at
+// checkout — this makes the WhatsApp message use the name on the order.
+func (o *ShopifyOrder) ResolveName() string {
+	for _, n := range []string{
+		o.ShippingAddress.FullName(),
+		o.BillingAddress.FullName(),
+		strings.TrimSpace(o.Customer.FirstName + " " + o.Customer.LastName),
+	} {
+		if n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
 type ShopifyCustomer struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
@@ -490,7 +509,18 @@ type ShopifyCustomer struct {
 }
 
 type ShopifyAddress struct {
-	Phone string `json:"phone"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Name      string `json:"name"` // full name as entered at checkout
+	Phone     string `json:"phone"`
+}
+
+// FullName returns the address's name, preferring the combined name field.
+func (a ShopifyAddress) FullName() string {
+	if n := strings.TrimSpace(a.Name); n != "" {
+		return n
+	}
+	return strings.TrimSpace(a.FirstName + " " + a.LastName)
 }
 
 type ShopifyLineItem struct {
