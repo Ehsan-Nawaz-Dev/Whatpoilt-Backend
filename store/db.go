@@ -217,6 +217,10 @@ func (db *DB) migrate() error {
 		`ALTER TABLE contacts     ADD COLUMN opted_out_at DATETIME`,
 		`ALTER TABLE pending_jobs ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'`,
 		`ALTER TABLE pending_jobs ADD COLUMN options TEXT NOT NULL DEFAULT '[]'`,
+		// order_id + tag_on_send let the worker apply the trigger's Shopify tag
+		// only once the WhatsApp message is actually sent (not on webhook receipt).
+		`ALTER TABLE pending_jobs ADD COLUMN order_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pending_jobs ADD COLUMN tag_on_send TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pending_confirmations ADD COLUMN trigger_option TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pending_confirmations ADD COLUMN reply_no_message TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pending_confirmations ADD COLUMN reply_no_type TEXT NOT NULL DEFAULT 'text'`,
@@ -1031,7 +1035,8 @@ func (db *DB) CompleteReminder(id, status string) error {
 // ─── Pending Jobs (persistent queue) ─────────────────────────────────────────
 
 func (db *DB) EnqueueJob(shop, automationID, templateID, phone, message string,
-	msgType models.MessageType, options []string, runAt time.Time) error {
+	msgType models.MessageType, options []string, runAt time.Time,
+	orderID int64, tagOnSend string) error {
 	if msgType == "" {
 		msgType = models.MessageTypeText
 	}
@@ -1040,10 +1045,10 @@ func (db *DB) EnqueueJob(shop, automationID, templateID, phone, message string,
 	}
 	optJSON, _ := json.Marshal(options)
 	_, err := db.conn.Exec(
-		`INSERT INTO pending_jobs(id,shop_domain,phone,message,message_type,options,automation_id,template_id,scheduled_at,created_at,updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO pending_jobs(id,shop_domain,phone,message,message_type,options,automation_id,template_id,scheduled_at,created_at,updated_at,order_id,tag_on_send)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		uuid.NewString(), shop, phone, message, string(msgType), string(optJSON),
-		automationID, templateID, runAt, time.Now(), time.Now())
+		automationID, templateID, runAt, time.Now(), time.Now(), orderID, tagOnSend)
 	return err
 }
 
@@ -1052,7 +1057,8 @@ func (db *DB) GetReadyJobs(limit int) ([]models.PendingJob, error) {
 		`SELECT id,shop_domain,phone,message,
 		        COALESCE(message_type,'text'), COALESCE(options,'[]'),
 		        COALESCE(automation_id,''), COALESCE(template_id,''),
-		        attempts, max_attempts
+		        attempts, max_attempts,
+		        COALESCE(order_id,0), COALESCE(tag_on_send,'')
 		 FROM pending_jobs
 		 WHERE status='pending' AND scheduled_at<=? AND attempts<max_attempts
 		 ORDER BY scheduled_at ASC LIMIT ?`, time.Now(), limit)
@@ -1066,7 +1072,8 @@ func (db *DB) GetReadyJobs(limit int) ([]models.PendingJob, error) {
 		var msgType, optJSON string
 		rows.Scan(&j.ID, &j.ShopDomain, &j.Phone, &j.Message,
 			&msgType, &optJSON,
-			&j.AutomationID, &j.TemplateID, &j.Attempts, &j.MaxAttempts)
+			&j.AutomationID, &j.TemplateID, &j.Attempts, &j.MaxAttempts,
+			&j.OrderID, &j.TagOnSend)
 		j.MessageType = models.MessageType(msgType)
 		json.Unmarshal([]byte(optJSON), &j.Options)
 		if j.Options == nil {

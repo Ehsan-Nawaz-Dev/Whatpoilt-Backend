@@ -80,14 +80,14 @@ func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
 		return
 	}
 
-	// Tag the refund's order immediately — independent of phone or automation status.
-	go h.tagOrderAsync(shop, refund.OrderID, models.TriggerRefundCreated)
+	// The refund tag is applied by the worker once the WhatsApp notification is
+	// actually sent — see enqueueAutomations below.
 
 	// The refund webhook doesn't include customer details — fetch the parent order
-	// so we can send a WhatsApp notification. If we can't fetch it, tagging already fired.
+	// so we can send a WhatsApp notification.
 	token := h.db.GetShopToken(shop)
 	if token == "" {
-		slog.Warn("refund webhook: no access token — WA notification skipped, tag already queued", "shop", shop)
+		slog.Warn("refund webhook: no access token — WA notification skipped", "shop", shop)
 		c.JSON(http.StatusOK, gin.H{"skipped": "no access token for WA notification"})
 		return
 	}
@@ -113,7 +113,7 @@ func (h *ShopifyHandler) RefundCreated(c *gin.Context) {
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
 
-	h.enqueueAutomations(shop, autos, phone, models.TriggerRefundCreated, map[string]string{
+	h.enqueueAutomations(shop, autos, phone, models.TriggerRefundCreated, refund.OrderID, map[string]string{
 		"name":          name,
 		"order_number":  fmt.Sprint(order.OrderNumber),
 		"total":         fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
@@ -191,7 +191,7 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", checkout.Customer.FirstName, checkout.Customer.LastName))
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(checkout.Customer.ID))
 
-	h.enqueueAutomations(shop, automations, phone, models.TriggerAbandonedCart, map[string]string{
+	h.enqueueAutomations(shop, automations, phone, models.TriggerAbandonedCart, 0, map[string]string{
 		"name":              name,
 		"cart_url":          checkout.AbandonedCheckoutURL,
 		"discount_cart_url": discountCartURL,
@@ -203,9 +203,9 @@ func (h *ShopifyHandler) AbandonedCart(c *gin.Context) {
 func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger models.TriggerType, order models.ShopifyOrder) {
 	slog.Info("webhook order received", "shop", shop, "trigger", trigger, "order", order.OrderNumber)
 
-	// Tag the order immediately — independent of phone number or automation status.
-	// Every order that fires a webhook should receive the trigger's Shopify tag.
-	go h.tagOrderAsync(shop, order.ID, trigger)
+	// The trigger tag (e.g. "⏳ Pending Confirmation") is applied by the worker
+	// once the WhatsApp message is actually sent — see enqueueAutomations. Orders
+	// with no phone get the "No Whatsapp Found" status tag instead (below).
 
 	phone := order.ResolvePhone()
 	if phone == "" {
@@ -240,7 +240,7 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 	// Stamp last_order_at so win-back can detect inactivity.
 	h.db.UpdateLastOrderAt(shop, phone)
 
-	h.enqueueAutomations(shop, automations, phone, trigger, map[string]string{
+	h.enqueueAutomations(shop, automations, phone, trigger, order.ID, map[string]string{
 		"name":         name,
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
@@ -289,11 +289,19 @@ func (h *ShopifyHandler) resolveTemplateByName(shop string, name string, vars ma
 // enqueueAutomations writes jobs to the persistent pending_jobs table.
 // The worker goroutine picks them up and delivers them — surviving restarts.
 func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automation,
-	phone string, trigger models.TriggerType, vars map[string]string) {
+	phone string, trigger models.TriggerType, orderID int64, vars map[string]string) {
 
 	if h.db.IsOptedOut(shop, phone) {
 		slog.Info("skipping opted-out contact", "shop", shop, "phone", phone)
 		return
+	}
+
+	// The trigger's Shopify tag is applied by the worker once the message is
+	// actually sent (not on webhook receipt), so resolve it here and carry it on
+	// the job. orderID == 0 (e.g. abandoned cart) means there's no order to tag.
+	tagOnSend := ""
+	if orderID != 0 {
+		tagOnSend = h.tagForTrigger(shop, trigger)
 	}
 
 	// A cancelled order voids the Post-Confirmation Reply that was stored when
@@ -369,7 +377,7 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		} else {
 			runAt := time.Now().Add(whatsapp.JitterDelay(la.auto.DelayMinutes))
 			if err := h.db.EnqueueJob(shop, la.auto.ID, la.tmpl.ID, phone, la.msg,
-				la.tmpl.MessageType, la.tmpl.Options, runAt); err != nil {
+				la.tmpl.MessageType, la.tmpl.Options, runAt, orderID, tagOnSend); err != nil {
 				slog.Error("enqueue job", "shop", shop, "err", err)
 			}
 		}
@@ -462,9 +470,8 @@ func (h *ShopifyHandler) verifyAndRead(c *gin.Context) ([]byte, bool) {
 // processExtraOrderTrigger fires additional automations for a COD or payment-pending
 // order without touching the HTTP context (always called in a goroutine).
 func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.TriggerType, order models.ShopifyOrder) {
-	// Tag first — independent of phone or automation status.
-	h.tagOrderAsync(shop, order.ID, trigger)
-
+	// The trigger tag is applied by the worker when the message is sent (see
+	// enqueueAutomations). No phone → "No Whatsapp Found" status tag instead.
 	phone := order.ResolvePhone()
 	if phone == "" {
 		go h.TagOrderWithLabel(shop, order.ID, "No Whatsapp Found")
@@ -476,7 +483,7 @@ func (h *ShopifyHandler) processExtraOrderTrigger(shop string, trigger models.Tr
 	}
 	name := strings.TrimSpace(fmt.Sprintf("%s %s", order.Customer.FirstName, order.Customer.LastName))
 	h.db.UpsertContactNew(shop, name, phone, fmt.Sprint(order.Customer.ID))
-	h.enqueueAutomations(shop, autos, phone, trigger, map[string]string{
+	h.enqueueAutomations(shop, autos, phone, trigger, order.ID, map[string]string{
 		"name":         name,
 		"order_number": fmt.Sprint(order.OrderNumber),
 		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
@@ -546,7 +553,7 @@ func fetchShopifyOrder(shop, token string, orderID int64) (*models.ShopifyOrder,
 // EnqueueWinBack enqueues win-back automations for a single inactive contact.
 // Called from the main.go background goroutine.
 func (h *ShopifyHandler) EnqueueWinBack(shop string, autos []models.Automation, contact models.Contact) {
-	h.enqueueAutomations(shop, autos, contact.Phone, models.TriggerWinBack, map[string]string{
+	h.enqueueAutomations(shop, autos, contact.Phone, models.TriggerWinBack, 0, map[string]string{
 		"name":  contact.Name,
 		"phone": contact.Phone,
 	})

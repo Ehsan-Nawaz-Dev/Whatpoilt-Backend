@@ -16,10 +16,20 @@ type Worker struct {
 	db       *store.DB
 	registry *whatsapp.Registry
 	poll     time.Duration
+	// tagOrder applies a Shopify tag to an order once its message is delivered.
+	// Injected from main (handlers.ShopifyHandler.TagOrderWithLabel) to avoid an
+	// import cycle. nil-safe: tagging is simply skipped if unset.
+	tagOrder func(shop string, orderID int64, tag string)
 }
 
 func New(db *store.DB, registry *whatsapp.Registry) *Worker {
 	return &Worker{db: db, registry: registry, poll: 10 * time.Second}
+}
+
+// SetOrderTagger wires the tag-on-send callback so the trigger's Shopify tag is
+// applied only after the WhatsApp message is actually delivered.
+func (w *Worker) SetOrderTagger(fn func(shop string, orderID int64, tag string)) {
+	w.tagOrder = fn
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -125,6 +135,13 @@ func (w *Worker) process(_ context.Context, job models.PendingJob) {
 	w.db.CompleteJob(job.ID)
 	if logEntry != nil {
 		w.db.UpdateMessageLogStatus(logEntry.ID, models.MessageStatusSent, "")
+	}
+
+	// Tag-on-send: now that the message is actually delivered, apply the trigger's
+	// Shopify tag (e.g. "⏳ Pending Confirmation"). Follow-up tags (confirm/cancel)
+	// are applied later, operation by operation, as the customer responds.
+	if job.OrderID != 0 && job.TagOnSend != "" && w.tagOrder != nil {
+		w.tagOrder(job.ShopDomain, job.OrderID, job.TagOnSend)
 	}
 }
 

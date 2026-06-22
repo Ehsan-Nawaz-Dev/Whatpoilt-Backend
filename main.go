@@ -201,6 +201,8 @@ func main() {
 
 	// ── Background worker (persistent job queue) ───────────────────────────────
 	wrk := worker.New(db, registry)
+	// Apply each order's trigger tag only once its WhatsApp message is delivered.
+	wrk.SetOrderTagger(handlers.NewShopifyHandler(registry, db).TagOrderWithLabel)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wrk.Run(ctx)

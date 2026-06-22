@@ -13,12 +13,14 @@ import (
 	"github.com/whatpilot/backend/store"
 )
 
-// defaultOrderTags are the emoji tags applied when a WA message is sent for each trigger.
+// defaultOrderTags are the emoji tags applied when a WA message is sent for each
+// trigger. These mirror the frontend Settings defaults (app.settings.tsx) so the
+// tag a merchant sees in the UI matches what's actually applied to the order.
 var defaultOrderTags = map[models.TriggerType]string{
-	models.TriggerOrderCreated:   "Pending Order Confirmation",
+	models.TriggerOrderCreated:   "⏳ Pending Order Confirmation",
 	models.TriggerOrderFulfilled: "📦 Shipped - WA Notified",
 	models.TriggerOrderCancelled: "❌ Cancellation Sent",
-	models.TriggerCODOrder:       "Pending Order Confirmation",
+	models.TriggerCODOrder:       "💵 COD - Confirmation Sent",
 	models.TriggerPaymentPending: "⏳ Payment Pending",
 	models.TriggerRefundCreated:  "💙 Refund Notified",
 	models.TriggerBankTransfer:   "🏦 Bank Transfer Sent",
@@ -35,57 +37,6 @@ func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) 
 		return tag
 	}
 	return defaultOrderTags[trigger]
-}
-
-// tagOrderAsync adds the trigger's tag to a Shopify order via GraphQL.
-//
-// If Shopify rejects the stored token because it's a legacy non-expiring token,
-// it is migrated in place to an expiring token (+ refresh token) and the tag is
-// retried — fully automatic, no merchant interaction. Any other auth failure
-// (revoked/invalid token, missing scope) flags the shop for re-authorization so
-// the frontend can surface a "Reconnect Shopify" prompt.
-func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger models.TriggerType) {
-	tag := h.tagForTrigger(shop, trigger)
-	if tag == "" {
-		slog.Debug("no tag configured for trigger — skipping", "shop", shop, "order", orderID, "trigger", trigger)
-		return
-	}
-	token := h.db.GetShopToken(shop)
-	if token == "" {
-		slog.Warn("no access token for shop — flagging for re-auth", "shop", shop, "order", orderID, "trigger", trigger)
-		_ = h.db.FlagShopReauth(shop, reasonNoToken)
-		return
-	}
-
-	slog.Info("tagging order", "shop", shop, "order", orderID, "trigger", trigger, "tag", tag, "token_prefix", tokenPrefix(token))
-
-	err := addShopifyOrderTag(shop, token, orderID, tag)
-	if err == nil {
-		slog.Info("order tagged successfully", "shop", shop, "order", orderID, "tag", tag)
-		return
-	}
-
-	// Legacy non-expiring token: migrate it to an expiring token in place and retry.
-	// Fully automatic and backend-only — no merchant interaction required.
-	if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
-		if err2 := addShopifyOrderTag(shop, newToken, orderID, tag); err2 != nil {
-			slog.Error("order tag failed after token migration", "shop", shop, "order", orderID, "tag", tag, "err", err2)
-			return
-		}
-		slog.Info("order tagged successfully after token migration", "shop", shop, "order", orderID, "tag", tag)
-		return
-	}
-
-	// Any other auth failure (revoked/invalid token, missing scope) genuinely needs
-	// the merchant to reconnect — flag it.
-	if isReauthRequiredError(err) {
-		slog.Warn("shopify rejected access token — flagging shop for re-auth",
-			"shop", shop, "order", orderID, "token_prefix", tokenPrefix(token), "err", err)
-		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
-		return
-	}
-
-	slog.Error("order tag failed", "shop", shop, "order", orderID, "tag", tag, "token_prefix", tokenPrefix(token), "err", err)
 }
 
 // migrateLegacyToken handles the "Non-expiring access tokens are no longer accepted"

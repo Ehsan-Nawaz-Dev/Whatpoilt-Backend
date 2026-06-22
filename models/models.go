@@ -344,6 +344,10 @@ type PendingJob struct {
 	TemplateID  string      `json:"template_id"`
 	Attempts    int         `json:"attempts"`
 	MaxAttempts int         `json:"max_attempts"`
+	// OrderID + TagOnSend: when set, the worker applies TagOnSend to this Shopify
+	// order once the message is successfully delivered (tag-on-send, not on receipt).
+	OrderID   int64  `json:"order_id"`
+	TagOnSend string `json:"tag_on_send"`
 }
 
 // ReplyReminder tracks 24-hour no-reply follow-up messages.

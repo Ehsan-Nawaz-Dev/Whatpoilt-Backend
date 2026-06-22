@@ -57,7 +57,7 @@ func (h *BroadcastHandler) Send(c *gin.Context) {
 		msg := resolveTemplate(tmpl.Content, vars)
 		runAt := now.Add(time.Duration(i) * stagger)
 		if err := h.db.EnqueueJob(shop, "", tmpl.ID, ct.Phone, msg,
-			tmpl.MessageType, tmpl.Options, runAt); err != nil {
+			tmpl.MessageType, tmpl.Options, runAt, 0, ""); err != nil {
 			slog.Warn("broadcast: enqueue failed", "shop", shop, "phone", ct.Phone, "err", err)
 			continue
 		}
