@@ -142,10 +142,10 @@ func isDeprecatedTokenError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "Non-expiring access tokens")
 }
 
-// isDeprecatedTokenByPrefix returns true for old permanent offline tokens (shpat_ prefix).
-// New rotating offline tokens use the shpoa_ prefix.
+// isDeprecatedTokenByPrefix was incorrectly flagging modern offline tokens.
+// We now rely purely on the GraphQL API returning an explicit expiration error.
 func isDeprecatedTokenByPrefix(token string) bool {
-	return strings.HasPrefix(token, "shpat_")
+	return false
 }
 
 func tokenPrefix(token string) string {
