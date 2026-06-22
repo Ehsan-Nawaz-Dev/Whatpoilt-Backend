@@ -271,6 +271,7 @@ func main() {
 	supportH := handlers.NewSupportHandler(db)
 	shopTagsH := handlers.NewShopTagsHandler(db)
 	retagH    := handlers.NewRetagHandler(db)
+	billingH  := handlers.NewBillingHandler(db)
 
 	// Seed default FAQs on startup
 	db.SeedDefaultFAQs()
@@ -338,8 +339,15 @@ func main() {
 		api.PUT("/order-tags",    shopTagsH.Update)
 		api.POST("/retag-orders", retagH.Retag)
 
+		api.POST("/billing/create", billingH.Create)
+
 		api.POST("/support", supportH.SubmitTicket)
 	}
+
+	// ── Public billing return URL (hit by the merchant's browser after they
+	//    approve the charge on Shopify — verifies the subscription, then re-enters
+	//    the embedded app). No API key: it validates the real subscription itself.
+	r.GET("/billing/confirm", billingH.Confirm)
 
 	// ── Shopify webhook routes (HMAC verified, no API key header) ─────────────
 	hooks := r.Group("/webhooks")

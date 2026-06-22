@@ -16,6 +16,7 @@ type Config struct {
 	AdminAPIKey      string // secret for the admin panel
 	FrontendURL      string
 	AdminPanelURL    string
+	PublicURL        string // this backend's own public HTTPS base URL (for billing return URLs)
 	DBPath           string
 }
 
@@ -34,6 +35,7 @@ func Load() {
 		AdminAPIKey:      getEnv("ADMIN_API_KEY", ""),
 		FrontendURL:      getEnv("FRONTEND_URL", "http://localhost:3000"),
 		AdminPanelURL:    getEnv("ADMIN_PANEL_URL", "http://localhost:5173"),
+		PublicURL:        getEnv("BACKEND_PUBLIC_URL", "http://localhost:8080"),
 		DBPath:           getEnv("DB_PATH", "./data/whatsapp.db"),
 	}
 }

@@ -1139,6 +1139,9 @@ func (db *DB) CheckAndResetPlanLimits(shop string) {
 	}
 }
 
+// PlanInfo is the exported accessor for a plan's display name, price and limit.
+func (db *DB) PlanInfo(planKey string) (string, float64, int) { return db.planInfo(planKey) }
+
 // planInfo returns a plan's display name, price and monthly message limit from
 // admin_plans, falling back to the built-in defaults.
 func (db *DB) planInfo(planKey string) (name string, price float64, limit int) {
