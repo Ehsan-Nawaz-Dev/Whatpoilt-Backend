@@ -240,11 +240,15 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 	// Stamp last_order_at so win-back can detect inactivity.
 	h.db.UpdateLastOrderAt(shop, phone)
 
+	trackNum, trackURL, courier := order.TrackingInfo()
 	h.enqueueAutomations(shop, automations, phone, trigger, order.ID, map[string]string{
-		"name":         name,
-		"order_number": fmt.Sprint(order.OrderNumber),
-		"total":        fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
-		"order_id":     fmt.Sprint(order.ID),
+		"name":            name,
+		"order_number":    fmt.Sprint(order.OrderNumber),
+		"total":           fmt.Sprintf("%s %s", order.TotalPrice, order.Currency),
+		"order_id":        fmt.Sprint(order.ID),
+		"tracking_number": trackNum,
+		"tracking_url":    trackURL,
+		"courier":         courier,
 	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "queued"})
@@ -322,6 +326,14 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 	}
 	items := make([]loadedAuto, 0, len(autos))
 	for _, auto := range autos {
+		// "Cancellation Verification" is the interactive "are you sure you want to
+		// cancel?" poll used in the customer-initiated cancel flow (step 2 of order
+		// confirmation). When the *merchant* cancels from Shopify, the order_cancelled
+		// webhook fires — the order is already cancelled, so we send only the
+		// cancellation notice, not the verification poll.
+		if trigger == models.TriggerOrderCancelled && auto.Name == "Cancellation Verification" {
+			continue
+		}
 		tmpl, err := h.db.GetTemplate(auto.TemplateID, shop)
 		if err != nil || !tmpl.IsActive {
 			continue

@@ -41,11 +41,13 @@ const (
 // Template is a WhatsApp message template.
 // Variables use <<variable_name>> syntax:
 //
-//	<<name>>         Customer full name
-//	<<order_number>> Shopify order number
-//	<<total>>        Order total with currency
-//	<<cart_url>>     Abandoned-cart recovery URL
-//	<<tracking_url>> Shipment tracking link
+//	<<name>>            Customer full name
+//	<<order_number>>    Shopify order number
+//	<<total>>           Order total with currency
+//	<<cart_url>>        Abandoned-cart recovery URL
+//	<<tracking_url>>    Shipment tracking link (falls back to order status page)
+//	<<tracking_number>> Shipment tracking number
+//	<<courier>>         Courier / carrier name (e.g. DHL, TCS)
 type Template struct {
 	ID          string      `json:"id"`
 	Name        string      `json:"name"`
@@ -146,7 +148,7 @@ var DefaultTemplates = []Template{
 	{
 		Name:        "Shipping Confirmation",
 		MessageType: MessageTypeText,
-		Content:     "Hi <<name>>! 🚚 Your order #<<order_number>> has left our warehouse and is heading your way.\n\nTrack your shipment here: <<tracking_url>>\n\nExpected arrival: 3–5 business days.",
+		Content:     "Hi <<name>>! 🚚 Your order #<<order_number>> has shipped via <<courier>> and is heading your way.\n\n📦 Tracking number: <<tracking_number>>\n🔗 Track your shipment: <<tracking_url>>\n\nExpected arrival: 3–5 business days.",
 		IsActive:    true,
 		IsDefault:   true,
 	},
@@ -379,17 +381,55 @@ type MessageLog struct {
 
 // ShopifyOrder is the subset of Shopify order data we care about.
 type ShopifyOrder struct {
-	ID              int64             `json:"id"`
-	OrderNumber     int               `json:"order_number"`
-	TotalPrice      string            `json:"total_price"`
-	Currency        string            `json:"currency"`
-	Phone           string            `json:"phone"` // top-level order phone
-	PaymentGateway  string            `json:"payment_gateway"`  // e.g. "cash_on_delivery", "manual", "shopify_payments"
-	FinancialStatus string            `json:"financial_status"` // "pending", "paid", "unpaid", "refunded"
-	Customer        ShopifyCustomer   `json:"customer"`
-	ShippingAddress ShopifyAddress    `json:"shipping_address"`
-	BillingAddress  ShopifyAddress    `json:"billing_address"`
-	LineItems       []ShopifyLineItem `json:"line_items"`
+	ID              int64                `json:"id"`
+	OrderNumber     int                  `json:"order_number"`
+	TotalPrice      string               `json:"total_price"`
+	Currency        string               `json:"currency"`
+	Phone           string               `json:"phone"` // top-level order phone
+	PaymentGateway  string               `json:"payment_gateway"`  // e.g. "cash_on_delivery", "manual", "shopify_payments"
+	FinancialStatus string               `json:"financial_status"` // "pending", "paid", "unpaid", "refunded"
+	OrderStatusURL  string               `json:"order_status_url"` // customer-facing order/tracking page
+	Customer        ShopifyCustomer      `json:"customer"`
+	ShippingAddress ShopifyAddress       `json:"shipping_address"`
+	BillingAddress  ShopifyAddress       `json:"billing_address"`
+	LineItems       []ShopifyLineItem    `json:"line_items"`
+	Fulfillments    []ShopifyFulfillment `json:"fulfillments"`
+}
+
+// ShopifyFulfillment carries shipment tracking details from the orders/fulfilled
+// webhook payload.
+type ShopifyFulfillment struct {
+	TrackingNumber  string   `json:"tracking_number"`
+	TrackingNumbers []string `json:"tracking_numbers"`
+	TrackingURL     string   `json:"tracking_url"`
+	TrackingURLs    []string `json:"tracking_urls"`
+	TrackingCompany string   `json:"tracking_company"` // courier name, e.g. "DHL", "TCS"
+}
+
+// TrackingInfo returns the tracking number, tracking URL and courier from the
+// most recent fulfillment that has any tracking data. Empty strings if none.
+// Falls back to the order status URL for the tracking link when no fulfillment
+// tracking URL is present.
+func (o *ShopifyOrder) TrackingInfo() (number, url, courier string) {
+	for i := len(o.Fulfillments) - 1; i >= 0; i-- {
+		f := o.Fulfillments[i]
+		number = f.TrackingNumber
+		if number == "" && len(f.TrackingNumbers) > 0 {
+			number = f.TrackingNumbers[0]
+		}
+		url = f.TrackingURL
+		if url == "" && len(f.TrackingURLs) > 0 {
+			url = f.TrackingURLs[0]
+		}
+		courier = f.TrackingCompany
+		if number != "" || url != "" || courier != "" {
+			break
+		}
+	}
+	if url == "" {
+		url = o.OrderStatusURL
+	}
+	return
 }
 
 // ShopifyRefund is the payload Shopify sends on the refunds/create webhook.
