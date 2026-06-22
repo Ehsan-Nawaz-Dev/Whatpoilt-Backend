@@ -1139,21 +1139,73 @@ func (db *DB) CheckAndResetPlanLimits(shop string) {
 	}
 }
 
-func (db *DB) ChargeUsageMessage(shop string, planKey string, lineItemId string) (bool, error) {
+// planInfo returns a plan's display name, price and monthly message limit from
+// admin_plans, falling back to the built-in defaults.
+func (db *DB) planInfo(planKey string) (name string, price float64, limit int) {
+	if err := db.conn.QueryRow(
+		`SELECT display_name, price, message_limit FROM admin_plans WHERE plan_key=?`, planKey,
+	).Scan(&name, &price, &limit); err == nil {
+		return
+	}
+	for _, p := range defaultAdminPlans {
+		if p.PlanKey == planKey {
+			return p.DisplayName, p.Price, p.MessageLimit
+		}
+	}
+	return planKey, 0, 150
+}
+
+// autoUpgradeOnLimit is called when a shop reaches its monthly message limit. For
+// paid tiers it charges the price difference to the next tier as a Shopify usage
+// record (within the merchant's pre-approved usage cap) and raises the shop to that
+// tier — no interruption, no manual approval. Free/top-tier shops (no next tier or
+// no usage line item) are paused instead.
+//
+// The usage charge uses a deterministic idempotency key (shop + target tier +
+// month) so concurrent worker goroutines crossing the limit at once produce at most
+// one charge per tier per billing month.
+func (db *DB) autoUpgradeOnLimit(shop, planKey, lineItemId string) (bool, error) {
+	next := NextPlanKey(planKey)
+	if next == "" {
+		slog.Warn("shop exceeded top-tier message limit — pausing", "shop", shop, "plan", planKey)
+		return false, nil
+	}
 	if lineItemId == "" {
-		slog.Warn("ChargeUsageMessage failed: no subscription_line_item_id stored", "shop", shop)
-		return false, fmt.Errorf("no subscription_line_item_id stored for shop")
+		// Free plan (or no usage line item): can't auto-charge — the merchant must
+		// approve a paid subscription first. The frontend prompts an upgrade.
+		slog.Info("over limit with no usage line item — upgrade needs subscription", "shop", shop, "plan", planKey, "next", next)
+		return false, nil
 	}
 
+	_, curPrice, _ := db.planInfo(planKey)
+	nextName, nextPrice, nextLimit := db.planInfo(next)
+	diff := nextPrice - curPrice
+	if diff < 0 {
+		diff = 0
+	}
+	if diff > 0 {
+		idem := fmt.Sprintf("upgrade-%s-%s-%s", shop, next, time.Now().Format("2006-01"))
+		if err := db.createUsageCharge(shop, lineItemId, diff,
+			fmt.Sprintf("Auto-upgrade to %s plan", nextName), idem); err != nil {
+			slog.Error("auto-upgrade usage charge failed — pausing", "shop", shop, "next", next, "err", err)
+			return false, err
+		}
+	}
+	db.conn.Exec(`UPDATE settings SET plan_key=?, plan_name=?, message_limit=? WHERE shop_domain=?`,
+		next, nextName, nextLimit, shop)
+	slog.Info("auto-upgraded shop to next tier", "shop", shop, "from", planKey, "to", next, "charged", diff)
+	return true, nil
+}
+
+// createUsageCharge bills an amount to the shop's usage line item via Shopify's
+// appUsageRecordCreate. idempotencyKey dedupes concurrent/retried charges.
+func (db *DB) createUsageCharge(shop, lineItemId string, amount float64, description, idempotencyKey string) error {
+	if lineItemId == "" {
+		return fmt.Errorf("no subscription_line_item_id stored for shop")
+	}
 	token := db.GetShopToken(shop)
 	if token == "" {
-		slog.Warn("ChargeUsageMessage failed: no access token stored", "shop", shop)
-		return false, fmt.Errorf("no access token stored for shop")
-	}
-
-	var price float64 = 0.02
-	if planKey == "pro" {
-		price = 0.01
+		return fmt.Errorf("no access token stored for shop")
 	}
 
 	const query = `mutation appUsageRecordCreate($input: AppUsageRecordCreateInput!) {
@@ -1162,19 +1214,14 @@ func (db *DB) ChargeUsageMessage(shop string, planKey string, lineItemId string)
 			userErrors { field message }
 		}
 	}`
-
-	idempotencyKey := uuid.New().String()
 	payload, _ := json.Marshal(map[string]interface{}{
 		"query": query,
 		"variables": map[string]interface{}{
 			"input": map[string]interface{}{
 				"subscriptionLineItemId": lineItemId,
-				"description":            "Charge for extra WhatsApp message above limit",
-				"price": map[string]interface{}{
-					"amount":       price,
-					"currencyCode": "USD",
-				},
-				"idempotencyKey": idempotencyKey,
+				"description":            description,
+				"price":                  map[string]interface{}{"amount": amount, "currencyCode": "USD"},
+				"idempotencyKey":         idempotencyKey,
 			},
 		},
 	})
@@ -1182,19 +1229,18 @@ func (db *DB) ChargeUsageMessage(shop string, planKey string, lineItemId string)
 	url := fmt.Sprintf("https://%s/admin/api/2026-01/graphql.json", shop)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return false, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Shopify-Access-Token", token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("shopify usage charge graphql status %d", resp.StatusCode)
+		return fmt.Errorf("shopify usage charge graphql status %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -1205,23 +1251,19 @@ func (db *DB) ChargeUsageMessage(shop string, planKey string, lineItemId string)
 			} `json:"appUsageRecordCreate"`
 		} `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return false, err
+		return err
 	}
-
-	if len(result.Data.AppUsageRecordCreate.UserErrors) > 0 {
-		var errMsgs []string
-		for _, e := range result.Data.AppUsageRecordCreate.UserErrors {
-			errMsgs = append(errMsgs, e.Message)
+	if errs := result.Data.AppUsageRecordCreate.UserErrors; len(errs) > 0 {
+		var msgs []string
+		for _, e := range errs {
+			msgs = append(msgs, e.Message)
 		}
-		errMsg := strings.Join(errMsgs, "; ")
-		slog.Error("Shopify appUsageRecordCreate mutation returned userErrors", "shop", shop, "errors", errMsg)
-		return false, fmt.Errorf("graphql errors: %s", errMsg)
+		return fmt.Errorf("graphql errors: %s", strings.Join(msgs, "; "))
 	}
-
-	slog.Info("Successfully charged usage fee for extra message", "shop", shop, "price", price, "id", result.Data.AppUsageRecordCreate.AppUsageRecord.ID)
-	return true, nil
+	slog.Info("usage charge created", "shop", shop, "amount", amount, "desc", description,
+		"id", result.Data.AppUsageRecordCreate.AppUsageRecord.ID)
+	return nil
 }
 
 func (db *DB) CanSendWhatsAppMessage(shop string) (bool, error) {
@@ -1244,13 +1286,9 @@ func (db *DB) CanSendWhatsAppMessage(shop string) (bool, error) {
 		return true, nil
 	}
 
-	// Over limit: pause sending. The merchant must approve the higher charge in
-	// Shopify before sending resumes, so the app surfaces a one-click upgrade
-	// prompt to the next tier (the frontend derives "over limit" + next plan from
-	// message_limit / messages_sent_this_month in GET /api/settings).
-	_ = lineItemId // retained for signature compatibility; usage-charging removed
-	_ = planKey
-	return false, nil
+	// Over limit: auto-upgrade to the next paid tier via a usage charge (no block).
+	// Free / top tier without a usage line item pauses instead.
+	return db.autoUpgradeOnLimit(shop, planKey, lineItemId)
 }
 
 func (db *DB) IncrementSentMessages(shop string) {
