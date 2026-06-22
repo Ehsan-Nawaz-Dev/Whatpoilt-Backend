@@ -422,7 +422,7 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 				noMsgVal, noTypeVal, noOptsVal, negativeOption,
 				helpMsg, helpType, helpOpts, helpOption,
 				step2Yes, step2No, step2Help,
-				orderID, "Order Confirmed", "",
+				orderID, FlowTagConfirmed, "",
 			)
 			if err != nil {
 				slog.Error("store pending confirmation extended", "shop", shop, "err", err)

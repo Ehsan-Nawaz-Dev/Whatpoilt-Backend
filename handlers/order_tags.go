@@ -27,6 +27,24 @@ var defaultOrderTags = map[models.TriggerType]string{
 	models.TriggerWelcome:        "👋 Welcome Sent",
 }
 
+// Conversation-flow lifecycle tags, applied as the customer responds to the
+// confirmation poll. Part of the mutually-exclusive status set below. Exported so
+// the confirmation flow in main.go applies the exact same values.
+const (
+	FlowTagConfirmed = "Order Confirmed"
+	FlowTagCancelled = "Order Cancel"
+)
+
+// lifecycleTriggers are the triggers whose tags represent a mutually-exclusive
+// order status. Welcome and attribute tags ("WA Influenced", "No Whatsapp Found")
+// are intentionally excluded — those are additive and persist across status changes.
+var lifecycleTriggers = []models.TriggerType{
+	models.TriggerOrderCreated, models.TriggerOrderFulfilled,
+	models.TriggerOrderCancelled, models.TriggerCODOrder,
+	models.TriggerPaymentPending, models.TriggerRefundCreated,
+	models.TriggerBankTransfer,
+}
+
 // tagForTrigger resolves the tag for a trigger: per-shop config → global admin config → built-in default.
 func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) string {
 	key := "order_tag_" + string(trigger)
@@ -37,6 +55,78 @@ func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) 
 		return tag
 	}
 	return defaultOrderTags[trigger]
+}
+
+// lifecycleTagSet returns every status tag this shop can apply to an order — the
+// per-trigger tags (shop-configured or default) plus the confirm/cancel flow tags.
+// These are mutually exclusive: applying one should replace the others.
+func (h *ShopifyHandler) lifecycleTagSet(shop string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(t string) {
+		if t != "" && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, tr := range lifecycleTriggers {
+		add(h.tagForTrigger(shop, tr))
+	}
+	add(FlowTagConfirmed)
+	add(FlowTagCancelled)
+	return out
+}
+
+// SetOrderLifecycleTag moves an order to a single status: it removes every other
+// known lifecycle tag, then adds newTag — so the order shows only its current
+// state (Pending → Confirmed/Cancelled → Shipped) instead of accumulating every
+// stage. Attribute tags (WA Influenced, No Whatsapp Found, Welcome) are untouched.
+func (h *ShopifyHandler) SetOrderLifecycleTag(shop string, orderID int64, newTag string) {
+	if orderID == 0 || newTag == "" {
+		return
+	}
+	token := h.db.GetShopToken(shop)
+	if token == "" {
+		_ = h.db.FlagShopReauth(shop, reasonNoToken)
+		return
+	}
+
+	// Remove the other status tags first so only the new status remains.
+	var remove []string
+	for _, t := range h.lifecycleTagSet(shop) {
+		if t != newTag {
+			remove = append(remove, t)
+		}
+	}
+	if len(remove) > 0 {
+		if err := removeShopifyOrderTags(shop, token, orderID, remove); err != nil {
+			if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
+				token = newToken
+				_ = removeShopifyOrderTags(shop, token, orderID, remove)
+			} else {
+				slog.Warn("lifecycle tag remove failed", "shop", shop, "order", orderID, "err", err)
+			}
+		}
+	}
+
+	// Add the new status tag, reusing the legacy-token migration / re-auth handling.
+	err := addShopifyOrderTag(shop, token, orderID, newTag)
+	if err == nil {
+		slog.Info("order lifecycle tag set", "shop", shop, "order", orderID, "tag", newTag)
+		return
+	}
+	if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
+		if err2 := addShopifyOrderTag(shop, newToken, orderID, newTag); err2 != nil {
+			slog.Error("lifecycle tag add failed after migration", "shop", shop, "order", orderID, "tag", newTag, "err", err2)
+		}
+		return
+	}
+	if isReauthRequiredError(err) {
+		slog.Warn("shopify rejected token — flagging for re-auth", "shop", shop, "order", orderID, "err", err)
+		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+		return
+	}
+	slog.Error("lifecycle tag add failed", "shop", shop, "order", orderID, "tag", newTag, "err", err)
 }
 
 // migrateLegacyToken handles the "Non-expiring access tokens are no longer accepted"
@@ -96,20 +186,35 @@ func tokenPrefix(token string) string {
 	return token
 }
 
-// addShopifyOrderTag calls the Shopify GraphQL Admin API tagsAdd mutation.
+// addShopifyOrderTag adds a single tag to a Shopify order (tagsAdd).
 func addShopifyOrderTag(shop, token string, orderID int64, tag string) error {
-	const query = `mutation tagsAdd($id: ID!, $tags: [String!]!) {
-		tagsAdd(id: $id, tags: $tags) {
+	return mutateShopifyOrderTags(shop, token, "tagsAdd", orderID, []string{tag})
+}
+
+// removeShopifyOrderTags removes tags from a Shopify order (tagsRemove). Tags that
+// aren't present are ignored by Shopify.
+func removeShopifyOrderTags(shop, token string, orderID int64, tags []string) error {
+	if len(tags) == 0 {
+		return nil
+	}
+	return mutateShopifyOrderTags(shop, token, "tagsRemove", orderID, tags)
+}
+
+// mutateShopifyOrderTags runs the Shopify GraphQL Admin API tagsAdd or tagsRemove
+// mutation. mutation must be "tagsAdd" or "tagsRemove".
+func mutateShopifyOrderTags(shop, token, mutation string, orderID int64, tags []string) error {
+	query := fmt.Sprintf(`mutation %s($id: ID!, $tags: [String!]!) {
+		%s(id: $id, tags: $tags) {
 			node { id }
 			userErrors { field message }
 		}
-	}`
+	}`, mutation, mutation)
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"query": query,
 		"variables": map[string]interface{}{
 			"id":   fmt.Sprintf("gid://shopify/Order/%d", orderID),
-			"tags": []string{tag},
+			"tags": tags,
 		},
 	})
 
@@ -132,17 +237,18 @@ func addShopifyOrderTag(shop, token string, orderID int64, tag string) error {
 		return fmt.Errorf("shopify graphql status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
+	// userErrors live under data.<mutation>.userErrors — key varies by mutation.
 	var result struct {
-		Data struct {
-			TagsAdd struct {
-				UserErrors []struct{ Message string } `json:"userErrors"`
-			} `json:"tagsAdd"`
+		Data map[string]struct {
+			UserErrors []struct {
+				Message string `json:"message"`
+			} `json:"userErrors"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return err
 	}
-	if errs := result.Data.TagsAdd.UserErrors; len(errs) > 0 {
+	if errs := result.Data[mutation].UserErrors; len(errs) > 0 {
 		msgs := make([]string, len(errs))
 		for i, e := range errs {
 			msgs[i] = e.Message

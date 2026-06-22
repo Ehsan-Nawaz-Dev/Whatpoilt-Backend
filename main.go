@@ -118,7 +118,7 @@ func main() {
 		if pc.OrderID != 0 && pc.TagOnYes != "" {
 			slog.Info("text confirmation — applying tag", "shop", shop, "order", pc.OrderID, "tag", pc.TagOnYes)
 			shopH := handlers.NewShopifyHandler(registry, db)
-			go shopH.TagOrderWithLabel(shop, pc.OrderID, pc.TagOnYes)
+			go shopH.SetOrderLifecycleTag(shop, pc.OrderID, pc.TagOnYes)
 		}
 	})
 	// Poll vote from customer: decrypted hashes are matched against trigger options —
@@ -153,7 +153,7 @@ func main() {
 					pc.Step2NoMessage, "text", []string{}, "❌ No, keep my order",
 					pc.Step2HelpMessage, "text", []string{}, "📞 I need to speak to someone",
 					"", "", "",
-					pc.OrderID, "Order Cancel", "Order Confirmed",
+					pc.OrderID, handlers.FlowTagCancelled, handlers.FlowTagConfirmed,
 				)
 				if err != nil {
 					slog.Error("failed to store step 2 pending confirmation", "err", err)
@@ -184,7 +184,7 @@ func main() {
 			if tagToApply != "" {
 				slog.Info("applying order tag from poll response", "shop", shop, "order_id", pc.OrderID, "tag", tagToApply)
 				shopH := handlers.NewShopifyHandler(registry, db)
-				go shopH.TagOrderWithLabel(shop, pc.OrderID, tagToApply)
+				go shopH.SetOrderLifecycleTag(shop, pc.OrderID, tagToApply)
 			}
 		}
 	})
@@ -202,7 +202,9 @@ func main() {
 	// ── Background worker (persistent job queue) ───────────────────────────────
 	wrk := worker.New(db, registry)
 	// Apply each order's trigger tag only once its WhatsApp message is delivered.
-	wrk.SetOrderTagger(handlers.NewShopifyHandler(registry, db).TagOrderWithLabel)
+	// SetOrderLifecycleTag replaces any earlier status tag so the order shows a
+	// single current status (Pending → Confirmed/Cancelled → Shipped).
+	wrk.SetOrderTagger(handlers.NewShopifyHandler(registry, db).SetOrderLifecycleTag)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wrk.Run(ctx)

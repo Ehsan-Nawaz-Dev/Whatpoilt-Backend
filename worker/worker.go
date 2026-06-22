@@ -16,9 +16,9 @@ type Worker struct {
 	db       *store.DB
 	registry *whatsapp.Registry
 	poll     time.Duration
-	// tagOrder applies a Shopify tag to an order once its message is delivered.
-	// Injected from main (handlers.ShopifyHandler.TagOrderWithLabel) to avoid an
-	// import cycle. nil-safe: tagging is simply skipped if unset.
+	// tagOrder applies a Shopify lifecycle tag to an order once its message is
+	// delivered. Injected from main (handlers.ShopifyHandler.SetOrderLifecycleTag)
+	// to avoid an import cycle. nil-safe: tagging is skipped if unset.
 	tagOrder func(shop string, orderID int64, tag string)
 }
 
