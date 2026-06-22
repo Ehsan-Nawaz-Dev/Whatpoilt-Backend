@@ -104,7 +104,7 @@ func exchangeForRotatingToken(shop, oldToken string) (string, error) {
 		"client_secret":        config.App.ShopifyAPISecret,
 		"grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
 		"subject_token":        oldToken,
-		"subject_token_type":   "urn:shopify:params:oauth:token-type:offline-access-token",
+		"subject_token_type":   "urn:ietf:params:oauth:token-type:access_token",
 		"requested_token_type": "urn:shopify:params:oauth:token-type:offline-access-token",
 	})
 
