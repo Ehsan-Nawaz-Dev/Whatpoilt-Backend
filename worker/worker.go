@@ -173,7 +173,7 @@ func (w *Worker) tickReminders(_ context.Context) {
 				return
 			}
 
-			w.db.CreateMessageLog(r.ShopDomain, "", r.Phone, "", r.Message)
+			w.db.LogOutboundMessage(r.ShopDomain, r.Phone, r.Message)
 			w.db.CompleteReminder(r.ID, "sent")
 			log.Info("reminder sent")
 		}()

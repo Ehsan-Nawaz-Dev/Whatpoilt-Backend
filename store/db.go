@@ -830,6 +830,19 @@ func (db *DB) CreateMessageLog(shop, automationID, phone, templateID, content st
 	return &l, err
 }
 
+// LogOutboundMessage records a successfully-sent outbound message that doesn't go
+// through the worker/automation pipeline — poll-vote replies, text-confirmation
+// replies, Step 2 cancel replies, keyword auto-replies — in message_logs and
+// increments the monthly usage counter. Without this, those messages are sent but
+// never counted, so the dashboard under-reports usage.
+func (db *DB) LogOutboundMessage(shop, phone, content string) {
+	logEntry, err := db.CreateMessageLog(shop, "", phone, "", content)
+	if err != nil {
+		return
+	}
+	db.UpdateMessageLogStatus(logEntry.ID, models.MessageStatusSent, "")
+}
+
 func (db *DB) UpdateMessageLogStatus(id string, status models.MessageStatus, errMsg string) error {
 	var sentAt interface{}
 	if status == models.MessageStatusSent {

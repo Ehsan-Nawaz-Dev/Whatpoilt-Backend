@@ -77,6 +77,7 @@ func main() {
 			return false
 		}
 		slog.Info("keyword auto-reply sent", "shop", shop, "phone", phone, "keyword", text)
+		db.LogOutboundMessage(shop, phone, reply)
 		return true
 	})
 	dispatchPendingReply := func(shop, phone string, pc *store.PendingConfirmation) {
@@ -85,14 +86,22 @@ func main() {
 			return
 		}
 		cfg, _ := db.GetSettings(shop)
+		var sendErr error
 		switch pc.ReplyType {
 		case "poll":
-			mgr.SendPollMessage(phone, pc.ReplyMessage, pc.ReplyOptions)
+			sendErr = mgr.SendPollMessage(phone, pc.ReplyMessage, pc.ReplyOptions)
 		case "buttons":
-			mgr.SendButtonMessage(phone, pc.ReplyMessage, pc.ReplyOptions)
+			sendErr = mgr.SendButtonMessage(phone, pc.ReplyMessage, pc.ReplyOptions)
 		default:
-			mgr.SendMessageWithTyping(phone, pc.ReplyMessage, cfg)
+			sendErr = mgr.SendMessageWithTyping(phone, pc.ReplyMessage, cfg)
 		}
+		if sendErr != nil {
+			slog.Warn("pending reply send failed", "shop", shop, "phone", phone, "err", sendErr)
+			return
+		}
+		// Count + log the reply so monthly usage and message logs include every
+		// outbound message (poll-vote replies, text-confirmation replies, Step 2 replies).
+		db.LogOutboundMessage(shop, phone, pc.ReplyMessage)
 	}
 
 	// Plain-text message from customer: only fires pending confirmations that
