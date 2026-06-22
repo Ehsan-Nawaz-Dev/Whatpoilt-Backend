@@ -264,7 +264,7 @@ func (h *ShopifyHandler) TagOrderWithLabel(shop string, orderID int64, tag strin
 	if isReauthRequiredError(err) {
 		slog.Warn("shopify rejected access token — flagging shop for re-auth",
 			"shop", shop, "order", orderID, "err", err)
-		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+		h.flagAndForceReexchange(shop, err)
 		return
 	}
 	slog.Error("label tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)

@@ -44,6 +44,10 @@ func (h *RetagHandler) Retag(c *gin.Context) {
 		if isReauthRequiredError(err) {
 			slog.Warn("retag: shopify rejected access token — flagging shop for re-auth", "shop", shop, "err", err)
 			_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+			if isStaleOfflineToken(err) {
+				_ = h.db.DeleteSession("offline_" + shop)
+				slog.Info("retag: discarded stale offline session — next app load will re-exchange for a fresh expiring token", "shop", shop)
+			}
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
 				"error":       "Shopify connection expired. Please reconnect your store, then try again.",
 				"needsReauth": true,

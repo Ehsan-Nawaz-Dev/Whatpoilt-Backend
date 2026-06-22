@@ -68,11 +68,29 @@ func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger model
 	if isReauthRequiredError(err) {
 		slog.Warn("shopify rejected access token — flagging shop for re-auth",
 			"shop", shop, "order", orderID, "token_prefix", tokenPrefix(token), "err", err)
-		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+		h.flagAndForceReexchange(shop, err)
 		return
 	}
 
 	slog.Error("order tag failed", "shop", shop, "order", orderID, "tag", tag, "token_prefix", tokenPrefix(token), "err", err)
+}
+
+// flagAndForceReexchange marks the shop for re-auth and, if Shopify rejected the
+// token because the *stored* offline token is the wrong kind (a legacy
+// non-expiring token) or is no longer valid, deletes the cached offline session.
+//
+// This is essential: the embedded app's authenticate.admin() reuses a stored
+// offline session as long as it exists and hasn't expired. A non-expiring token
+// has no expiry, so it is never seen as stale and is never re-exchanged — the
+// merchant can reopen the app forever and keep sending the same dead token.
+// Deleting the session forces a fresh token exchange (→ a proper expiring offline
+// token) on the next app load, which then mirrors back and clears the flag.
+func (h *ShopifyHandler) flagAndForceReexchange(shop string, err error) {
+	_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+	if isStaleOfflineToken(err) {
+		_ = h.db.DeleteSession("offline_" + shop)
+		slog.Info("discarded stale offline session — next app load will re-exchange for a fresh expiring token", "shop", shop)
+	}
 }
 
 // reauth reasons surfaced to the merchant via /api/settings/auth-status.
@@ -93,6 +111,22 @@ func isReauthRequiredError(err error) bool {
 	return strings.Contains(msg, "Non-expiring access tokens") ||
 		strings.Contains(msg, "status 401") ||
 		strings.Contains(msg, "status 403") ||
+		strings.Contains(msg, "Invalid API key or access token") ||
+		strings.Contains(msg, "unrecognized login")
+}
+
+// isStaleOfflineToken reports whether the error means the *stored* offline token
+// itself is unusable (a legacy non-expiring token Shopify no longer accepts, or a
+// revoked/invalid token) — i.e. the cached offline session must be discarded so
+// the app re-exchanges for a fresh one. This is narrower than isReauthRequiredError:
+// a generic 403 (e.g. a missing scope) should flag for re-auth but NOT delete the
+// session, since re-exchange wouldn't change the outcome.
+func isStaleOfflineToken(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Non-expiring access tokens") ||
 		strings.Contains(msg, "Invalid API key or access token") ||
 		strings.Contains(msg, "unrecognized login")
 }
