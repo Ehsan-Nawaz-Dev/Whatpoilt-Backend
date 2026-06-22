@@ -53,6 +53,9 @@ func (h *SessionHandler) Store(c *gin.Context) {
 	// Only offline sessions have long-lived, valid tokens for background tasks.
 	if s.AccessToken != "" && !s.IsOnline {
 		_ = h.db.SetShopToken(s.Shop, s.AccessToken)
+		// A fresh offline token just arrived (new OAuth) — the shop is reconnected,
+		// so clear any pending re-auth flag set by a previous failed API call.
+		_ = h.db.ClearShopReauth(s.Shop)
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

@@ -110,6 +110,36 @@ func (db *DB) ListShopsWithStats() ([]models.ShopStats, error) {
 	return out, nil
 }
 
+// ShopReauthInfo describes a shop that needs to reconnect Shopify.
+type ShopReauthInfo struct {
+	ShopDomain string     `json:"shop_domain"`
+	Reason     string     `json:"reason"`
+	DetectedAt *time.Time `json:"detected_at"`
+}
+
+// ListShopsNeedingReauth returns every shop currently flagged for re-auth, so the
+// SaaS admin panel can monitor (and reach out to) merchants whose Shopify
+// connection has broken and whose background automations are failing.
+func (db *DB) ListShopsNeedingReauth() ([]ShopReauthInfo, error) {
+	rows, err := db.conn.Query(`
+		SELECT shop_domain, reauth_reason, reauth_detected_at
+		FROM shop_tokens
+		WHERE needs_reauth = 1
+		ORDER BY reauth_detected_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ShopReauthInfo{}
+	for rows.Next() {
+		var info ShopReauthInfo
+		rows.Scan(&info.ShopDomain, &info.Reason, &info.DetectedAt)
+		out = append(out, info)
+	}
+	return out, nil
+}
+
 // ─── Admin: Plans ─────────────────────────────────────────────────────────────
 
 var defaultAdminPlans = []models.AdminPlan{

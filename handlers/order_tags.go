@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/whatpilot/backend/config"
 	"github.com/whatpilot/backend/models"
 )
 
@@ -38,8 +37,13 @@ func (h *ShopifyHandler) tagForTrigger(shop string, trigger models.TriggerType) 
 }
 
 // tagOrderAsync adds the trigger's tag to a Shopify order via GraphQL.
-// If the stored token is a deprecated non-expiring token (403), it automatically
-// exchanges it for a new rotating offline token and retries.
+//
+// If the stored token is rejected by Shopify (an expired/invalid token, or a
+// deprecated non-expiring token that the Admin API no longer accepts), the shop
+// is flagged for re-authorization. There is no backend-only recovery: minting a
+// new rotating token requires the merchant to re-open the app so the embedded
+// OAuth/token-exchange flow can run with a real session token. The frontend
+// surfaces a "Reconnect Shopify" banner for the flagged shop.
 func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger models.TriggerType) {
 	tag := h.tagForTrigger(shop, trigger)
 	if tag == "" {
@@ -48,21 +52,9 @@ func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger model
 	}
 	token := h.db.GetShopToken(shop)
 	if token == "" {
-		slog.Warn("no access token for shop — order tag skipped", "shop", shop, "order", orderID, "trigger", trigger)
+		slog.Warn("no access token for shop — flagging for re-auth", "shop", shop, "order", orderID, "trigger", trigger)
+		_ = h.db.FlagShopReauth(shop, reasonNoToken)
 		return
-	}
-
-	// Proactively exchange if token is the old permanent format — avoids a failed API round-trip.
-	if isDeprecatedTokenByPrefix(token) {
-		slog.Warn("deprecated non-expiring token detected before tagging — exchanging proactively", "shop", shop, "token_prefix", tokenPrefix(token))
-		newToken, exchErr := exchangeForRotatingToken(shop, token)
-		if exchErr != nil {
-			slog.Error("proactive token exchange failed", "shop", shop, "err", exchErr)
-			return
-		}
-		_ = h.db.SetShopToken(shop, newToken)
-		slog.Info("token exchanged proactively", "shop", shop, "new_token_prefix", tokenPrefix(newToken))
-		token = newToken
 	}
 
 	slog.Info("tagging order", "shop", shop, "order", orderID, "trigger", trigger, "tag", tag, "token_prefix", tokenPrefix(token))
@@ -73,79 +65,36 @@ func (h *ShopifyHandler) tagOrderAsync(shop string, orderID int64, trigger model
 		return
 	}
 
-	// Fallback: if error message confirms a deprecated token (e.g. token wasn't prefixed shpat_ but still permanent).
-	if isDeprecatedTokenError(err) {
-		slog.Warn("deprecated non-expiring token detected — exchanging for rotating token", "shop", shop, "token_prefix", tokenPrefix(token))
-		newToken, exchErr := exchangeForRotatingToken(shop, token)
-		if exchErr != nil {
-			slog.Error("token exchange failed", "shop", shop, "err", exchErr)
-			return
-		}
-		if err2 := h.db.SetShopToken(shop, newToken); err2 != nil {
-			slog.Error("failed to store rotated token", "shop", shop, "err", err2)
-		}
-		slog.Info("token exchanged — retrying order tag", "shop", shop, "order", orderID, "new_token_prefix", tokenPrefix(newToken))
-		if err3 := addShopifyOrderTag(shop, newToken, orderID, tag); err3 != nil {
-			slog.Error("order tag failed after token exchange", "shop", shop, "order", orderID, "tag", tag, "err", err3)
-		} else {
-			slog.Info("order tagged successfully after token exchange", "shop", shop, "order", orderID, "tag", tag)
-		}
+	if isReauthRequiredError(err) {
+		slog.Warn("shopify rejected access token — flagging shop for re-auth",
+			"shop", shop, "order", orderID, "token_prefix", tokenPrefix(token), "err", err)
+		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
 		return
 	}
 
 	slog.Error("order tag failed", "shop", shop, "order", orderID, "tag", tag, "token_prefix", tokenPrefix(token), "err", err)
 }
 
-// exchangeForRotatingToken exchanges a deprecated permanent offline token for a new
-// rotating offline token using Shopify's OAuth token exchange grant.
-func exchangeForRotatingToken(shop, oldToken string) (string, error) {
-	payload, _ := json.Marshal(map[string]string{
-		"client_id":            config.App.ShopifyAPIKey,
-		"client_secret":        config.App.ShopifyAPISecret,
-		"grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
-		"subject_token":        oldToken,
-		"subject_token_type":   "urn:ietf:params:oauth:token-type:access_token",
-		"requested_token_type": "urn:shopify:params:oauth:token-type:offline-access-token",
-	})
+// reauth reasons surfaced to the merchant via /api/settings/auth-status.
+const (
+	reasonInvalidToken = "Shopify rejected the stored access token. Please reconnect your store."
+	reasonNoToken      = "No Shopify access token on file. Please reconnect your store."
+)
 
-	url := fmt.Sprintf("https://%s/admin/oauth/access_token", shop)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
+// isReauthRequiredError reports whether a Shopify Admin API error means the
+// stored token is no longer usable and the merchant must re-authorize. This
+// covers expired/invalid tokens (HTTP 401/403) and the legacy non-expiring
+// token deprecation message.
+func isReauthRequiredError(err error) bool {
+	if err == nil {
+		return false
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token exchange HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("token exchange: parse response: %w", err)
-	}
-	if result.AccessToken == "" {
-		return "", fmt.Errorf("token exchange: empty access_token in response: %s", string(body))
-	}
-	return result.AccessToken, nil
-}
-
-func isDeprecatedTokenError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "Non-expiring access tokens")
-}
-
-// isDeprecatedTokenByPrefix was incorrectly flagging modern offline tokens.
-// We now rely purely on the GraphQL API returning an explicit expiration error.
-func isDeprecatedTokenByPrefix(token string) bool {
-	return false
+	msg := err.Error()
+	return strings.Contains(msg, "Non-expiring access tokens") ||
+		strings.Contains(msg, "status 401") ||
+		strings.Contains(msg, "status 403") ||
+		strings.Contains(msg, "Invalid API key or access token") ||
+		strings.Contains(msg, "unrecognized login")
 }
 
 func tokenPrefix(token string) string {

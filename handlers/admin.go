@@ -80,6 +80,42 @@ func (h *AdminHandler) ListShops(c *gin.Context) {
 	c.JSON(200, shops)
 }
 
+// GET /admin/shops/needs-reauth
+// Lists every merchant whose Shopify connection has broken (token rejected) and
+// whose background automations are failing until they reconnect.
+func (h *AdminHandler) ListShopsNeedingReauth(c *gin.Context) {
+	shops, err := h.db.ListShopsNeedingReauth()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, shops)
+}
+
+// GET /admin/shops/token-health
+// Reports, per shop, whether its offline session carries a refresh token and can
+// therefore be renewed silently from a background webhook. Shops marked at_risk
+// only self-heal when the merchant next opens the app.
+func (h *AdminHandler) TokenHealth(c *gin.Context) {
+	health, err := h.db.OfflineTokenHealth()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	atRisk := 0
+	for _, hh := range health {
+		if hh.AtRisk {
+			atRisk++
+		}
+	}
+	c.JSON(200, gin.H{
+		"total":   len(health),
+		"at_risk": atRisk,
+		"healthy": len(health) - atRisk,
+		"shops":   health,
+	})
+}
+
 // DELETE /admin/shops/:shop
 func (h *AdminHandler) PurgeShop(c *gin.Context) {
 	shop := c.Param("shop")

@@ -35,6 +35,21 @@ func main() {
 	}
 	defer db.Close()
 
+	// Report how many shops can't silently refresh their Shopify token in the
+	// background (no refresh token / no offline session). These only self-heal
+	// when the merchant reopens the app — see /admin/shops/token-health.
+	if health, herr := db.OfflineTokenHealth(); herr == nil {
+		atRisk := 0
+		for _, h := range health {
+			if h.AtRisk {
+				atRisk++
+				slog.Warn("shop token at risk — no background refresh possible",
+					"shop", h.Shop, "reason", h.Reason)
+			}
+		}
+		slog.Info("offline token health", "shops", len(health), "at_risk", atRisk, "healthy", len(health)-atRisk)
+	}
+
 	// ── WhatsApp Registry (one manager per merchant) ──────────────────────────
 	registry, err := whatsapp.NewRegistry("data/sessions")
 	if err != nil {
@@ -286,6 +301,7 @@ func main() {
 		stgs := api.Group("/settings")
 		stgs.GET("", stgsH.Get)
 		stgs.PUT("", stgsH.Save)
+		stgs.GET("/auth-status", stgsH.AuthStatus)
 
 		anlyt := api.Group("/analytics")
 		anlyt.GET("", anlH.Overview)
@@ -359,6 +375,10 @@ func main() {
 			if len(prefix) > 10 {
 				prefix = prefix[:10] + "…"
 			}
+			// Reaching register-shop means the merchant just authenticated
+			// successfully in the embedded app, so any pending re-auth flag is
+			// stale — clear it (self-healing for the multi-tenant SaaS flow).
+			_ = db.ClearShopReauth(req.ShopDomain)
 			// Only update shop_tokens if we don't already have a valid offline
 			// session token. The frontend calls register-shop on every page load
 			// with the online (short-lived) token from authenticate.admin().
@@ -404,6 +424,8 @@ func main() {
 		adm.GET("/order-tags",               admH.GetOrderTags)
 		adm.PUT("/order-tags",               admH.UpdateOrderTags)
 		adm.GET("/shops",                    admH.ListShops)
+		adm.GET("/shops/needs-reauth",       admH.ListShopsNeedingReauth)
+		adm.GET("/shops/token-health",       admH.TokenHealth)
 		adm.DELETE("/shops/:shop",           admH.PurgeShop)
 		adm.GET("/plans",                    admH.ListPlans)
 		adm.POST("/plans",                   admH.CreatePlan)

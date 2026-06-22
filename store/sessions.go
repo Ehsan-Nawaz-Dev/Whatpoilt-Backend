@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/whatpilot/backend/config"
@@ -45,6 +46,97 @@ func (db *DB) DeleteSessions(ids []string) error {
 		db.conn.Exec(`DELETE FROM shopify_sessions WHERE id=?`, id)
 	}
 	return nil
+}
+
+// TokenHealth describes a shop's background-refresh readiness.
+//
+// A shop can only have its Shopify token renewed silently from a background
+// webhook if its offline session carries a refresh_token. Without one (or with
+// no offline session at all — e.g. a legacy non-expiring token), the token can
+// only be refreshed the next time the merchant opens the app, so background
+// order-tagging will fail until then.
+type TokenHealth struct {
+	Shop            string     `json:"shop"`
+	HasOfflineToken bool       `json:"has_offline_token"`
+	HasRefreshToken bool       `json:"has_refresh_token"`
+	Expires         *time.Time `json:"expires,omitempty"`
+	AtRisk          bool       `json:"at_risk"`
+	Reason          string     `json:"reason,omitempty"`
+}
+
+// OfflineTokenHealth inspects every known shop and reports whether its offline
+// session carries a refresh token (and is therefore safe to renew in the
+// background). Shops flagged AtRisk only self-heal when the merchant reopens the
+// app. Results are sorted at-risk first, then by shop.
+func (db *DB) OfflineTokenHealth() ([]TokenHealth, error) {
+	health := map[string]TokenHealth{}
+
+	// 1. Inspect stored offline sessions.
+	rows, err := db.conn.Query(`SELECT shop, data FROM shopify_sessions WHERE id LIKE 'offline_%'`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var shop, data string
+		if rows.Scan(&shop, &data) != nil {
+			continue
+		}
+		var s map[string]interface{}
+		if json.Unmarshal([]byte(data), &s) != nil {
+			continue
+		}
+		accessToken, _ := s["accessToken"].(string)
+		refreshToken, _ := s["refreshToken"].(string)
+		h := TokenHealth{
+			Shop:            shop,
+			HasOfflineToken: accessToken != "",
+			HasRefreshToken: refreshToken != "",
+		}
+		if expStr, ok := s["expires"].(string); ok {
+			if exp, perr := time.Parse(time.RFC3339, expStr); perr == nil {
+				h.Expires = &exp
+			}
+		}
+		if h.HasOfflineToken && !h.HasRefreshToken {
+			h.AtRisk = true
+			h.Reason = "offline session has no refresh token — can't renew from a background webhook"
+		}
+		health[shop] = h
+	}
+	rows.Close()
+
+	// 2. Catch shops that have a token row but no offline session at all
+	//    (e.g. only a legacy non-expiring token) — the worst case.
+	trows, err := db.conn.Query(`SELECT shop_domain FROM shop_tokens`)
+	if err != nil {
+		return nil, err
+	}
+	for trows.Next() {
+		var shop string
+		if trows.Scan(&shop) != nil {
+			continue
+		}
+		if _, ok := health[shop]; !ok {
+			health[shop] = TokenHealth{
+				Shop:   shop,
+				AtRisk: true,
+				Reason: "no offline session — only a fallback/legacy token; reconnect required to get a rotating token",
+			}
+		}
+	}
+	trows.Close()
+
+	out := make([]TokenHealth, 0, len(health))
+	for _, h := range health {
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AtRisk != out[j].AtRisk {
+			return out[i].AtRisk // at-risk first
+		}
+		return out[i].Shop < out[j].Shop
+	})
+	return out, nil
 }
 
 // FindSessionsByShop returns all session JSON blobs for a given shop.
@@ -139,6 +231,9 @@ func (db *DB) RefreshOfflineTokenForShop(shop string) (string, error) {
 			access_token = excluded.access_token,
 			updated_at   = excluded.updated_at`,
 		shop, respData.AccessToken, time.Now())
+
+	// A successful refresh means the shop's offline grant is healthy again.
+	_ = db.ClearShopReauth(shop)
 
 	return respData.AccessToken, nil
 }

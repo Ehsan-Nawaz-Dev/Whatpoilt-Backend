@@ -254,22 +254,17 @@ func (h *ShopifyHandler) processOrder(c *gin.Context, shop string, trigger model
 func (h *ShopifyHandler) TagOrderWithLabel(shop string, orderID int64, tag string) {
 	token := h.db.GetShopToken(shop)
 	if token == "" {
+		_ = h.db.FlagShopReauth(shop, reasonNoToken)
 		return
 	}
 	err := addShopifyOrderTag(shop, token, orderID, tag)
 	if err == nil {
 		return
 	}
-	if isDeprecatedTokenError(err) {
-		newToken, exchErr := exchangeForRotatingToken(shop, token)
-		if exchErr != nil {
-			slog.Error("token exchange failed", "shop", shop, "err", exchErr)
-			return
-		}
-		_ = h.db.SetShopToken(shop, newToken)
-		if err2 := addShopifyOrderTag(shop, newToken, orderID, tag); err2 != nil {
-			slog.Error("label tag failed after token exchange", "shop", shop, "order", orderID, "tag", tag, "err", err2)
-		}
+	if isReauthRequiredError(err) {
+		slog.Warn("shopify rejected access token — flagging shop for re-auth",
+			"shop", shop, "order", orderID, "err", err)
+		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
 		return
 	}
 	slog.Error("label tag failed", "shop", shop, "order", orderID, "tag", tag, "err", err)

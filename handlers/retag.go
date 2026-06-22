@@ -39,22 +39,17 @@ func (h *RetagHandler) Retag(c *gin.Context) {
 		return
 	}
 
-	// Auto-exchange deprecated non-expiring token (shpat_ prefix) before bulk tagging.
-	if isDeprecatedTokenByPrefix(token) {
-		slog.Warn("retag: deprecated non-expiring token detected — exchanging", "shop", shop, "token_prefix", tokenPrefix(token))
-		newToken, exchErr := exchangeForRotatingToken(shop, token)
-		if exchErr != nil {
-			slog.Error("retag: token exchange failed", "shop", shop, "err", exchErr)
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Token exchange failed: " + exchErr.Error()})
-			return
-		}
-		_ = h.db.SetShopToken(shop, newToken)
-		slog.Info("retag: token exchanged successfully", "shop", shop, "new_token_prefix", tokenPrefix(newToken))
-		token = newToken
-	}
-
 	orders, err := fetchRecentOrders(shop, token, 250)
 	if err != nil {
+		if isReauthRequiredError(err) {
+			slog.Warn("retag: shopify rejected access token — flagging shop for re-auth", "shop", shop, "err", err)
+			_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":       "Shopify connection expired. Please reconnect your store, then try again.",
+				"needsReauth": true,
+			})
+			return
+		}
 		slog.Error("retag: fetch orders failed", "shop", shop, "err", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch orders from Shopify: " + err.Error()})
 		return

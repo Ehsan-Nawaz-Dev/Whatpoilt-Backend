@@ -245,6 +245,14 @@ func (db *DB) migrate() error {
 		`ALTER TABLE pending_confirmations ADD COLUMN order_id INTEGER DEFAULT 0`,
 		`ALTER TABLE pending_confirmations ADD COLUMN tag_on_yes TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE pending_confirmations ADD COLUMN tag_on_no TEXT NOT NULL DEFAULT ''`,
+
+		// ── per-shop Shopify re-authorization state (multi-tenant SaaS) ──────
+		// When a shop's access token is rejected by Shopify (legacy non-expiring
+		// token or 401), the backend flags it here so the frontend can show a
+		// "Reconnect Shopify" banner for that merchant only.
+		`ALTER TABLE shop_tokens ADD COLUMN needs_reauth INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE shop_tokens ADD COLUMN reauth_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE shop_tokens ADD COLUMN reauth_detected_at DATETIME`,
 	}
 
 	for _, s := range stmts {
