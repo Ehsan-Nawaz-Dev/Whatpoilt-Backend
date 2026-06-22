@@ -414,6 +414,31 @@ func main() {
 					slog.Error("failed to sync shop plan", "shop", req.ShopDomain, "plan", req.PlanName, "err", err)
 				}
 			}
+			c.JSON(200, gin.H{"ok": true, "plan_selected": db.IsPlanSelected(req.ShopDomain)})
+		})
+
+		// Whether the merchant has chosen a plan yet — gates app entry on install.
+		internal.GET("/plan-status", func(c *gin.Context) {
+			shop := c.Query("shop")
+			c.JSON(200, gin.H{"plan_selected": db.IsPlanSelected(shop)})
+		})
+
+		// Records the chosen plan (used for the free plan, which has no Shopify
+		// subscription; paid plans are recorded via register-shop after approval).
+		internal.POST("/select-plan", func(c *gin.Context) {
+			var req struct {
+				ShopDomain string `json:"shop_domain" binding:"required"`
+				Plan       string `json:"plan"        binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			if err := db.SyncShopPlanWithLineItem(req.ShopDomain, req.Plan, ""); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			slog.Info("plan selected", "shop", req.ShopDomain, "plan", req.Plan)
 			c.JSON(200, gin.H{"ok": true})
 		})
 

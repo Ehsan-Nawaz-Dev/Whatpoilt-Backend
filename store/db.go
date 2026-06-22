@@ -237,10 +237,13 @@ func (db *DB) migrate() error {
 		`ALTER TABLE settings ADD COLUMN sending_window_start INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN sending_window_end INTEGER DEFAULT -1`,
 		`ALTER TABLE settings ADD COLUMN win_back_inactive_days INTEGER DEFAULT 0`,
-		`ALTER TABLE settings ADD COLUMN plan_key TEXT DEFAULT 'starter'`,
-		`ALTER TABLE settings ADD COLUMN plan_name TEXT DEFAULT 'Starter'`,
-		`ALTER TABLE settings ADD COLUMN message_limit INTEGER DEFAULT 500`,
+		`ALTER TABLE settings ADD COLUMN plan_key TEXT DEFAULT 'free'`,
+		`ALTER TABLE settings ADD COLUMN plan_name TEXT DEFAULT 'Free'`,
+		`ALTER TABLE settings ADD COLUMN message_limit INTEGER DEFAULT 150`,
 		`ALTER TABLE settings ADD COLUMN messages_sent_this_month INTEGER DEFAULT 0`,
+		// plan_selected: 1 once the merchant has explicitly picked a plan (free or
+		// paid) after install — gates entry to the app until a plan is chosen.
+		`ALTER TABLE settings ADD COLUMN plan_selected INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE settings ADD COLUMN limit_reset_at DATETIME`,
 		`ALTER TABLE settings ADD COLUMN subscription_line_item_id TEXT DEFAULT ''`,
 		`ALTER TABLE support_messages ADD COLUMN reply TEXT NOT NULL DEFAULT ''`,
@@ -1117,7 +1120,7 @@ var defaultSettings = models.Settings{
 	ReadDelayMinSeconds: 1, ReadDelayMaxSeconds: 5,
 	FrequencyCapPerDay: 0, SendingWindowStart: -1, SendingWindowEnd: -1,
 	WinBackInactiveDays: 0,
-	PlanKey: "starter", PlanName: "Starter", MessageLimit: 500, MessagesSentThisMonth: 0,
+	PlanKey: "free", PlanName: "Free", MessageLimit: 150, MessagesSentThisMonth: 0,
 }
 
 func (db *DB) CheckAndResetPlanLimits(shop string) {
@@ -1227,7 +1230,7 @@ func (db *DB) CanSendWhatsAppMessage(shop string) (bool, error) {
 	var sent int
 	var planKey string
 	var lineItemId string
-	err := db.conn.QueryRow(`SELECT message_limit, messages_sent_this_month, COALESCE(plan_key,'starter'), COALESCE(subscription_line_item_id,'') FROM settings WHERE shop_domain=?`, shop).Scan(&limit, &sent, &planKey, &lineItemId)
+	err := db.conn.QueryRow(`SELECT message_limit, messages_sent_this_month, COALESCE(plan_key,'free'), COALESCE(subscription_line_item_id,'') FROM settings WHERE shop_domain=?`, shop).Scan(&limit, &sent, &planKey, &lineItemId)
 	if err == sql.ErrNoRows {
 		return true, nil
 	}
@@ -1241,13 +1244,13 @@ func (db *DB) CanSendWhatsAppMessage(shop string) (bool, error) {
 		return true, nil
 	}
 
-	// Over limit: try charging usage fee
-	allowed, chargeErr := db.ChargeUsageMessage(shop, planKey, lineItemId)
-	if chargeErr != nil {
-		slog.Error("failed to charge usage fee for extra message", "shop", shop, "err", chargeErr)
-		return false, chargeErr
-	}
-	return allowed, nil
+	// Over limit: pause sending. The merchant must approve the higher charge in
+	// Shopify before sending resumes, so the app surfaces a one-click upgrade
+	// prompt to the next tier (the frontend derives "over limit" + next plan from
+	// message_limit / messages_sent_this_month in GET /api/settings).
+	_ = lineItemId // retained for signature compatibility; usage-charging removed
+	_ = planKey
+	return false, nil
 }
 
 func (db *DB) IncrementSentMessages(shop string) {
@@ -1262,22 +1265,19 @@ func (db *DB) SyncShopPlan(shop string, planName string) error {
 func (db *DB) SyncShopPlanWithLineItem(shop string, planName string, lineItemId string) error {
 	planKey := strings.ToLower(planName)
 	var displayName string = planName
-	var messageLimit int = 500
+	var messageLimit int = 150
 
 	err := db.conn.QueryRow(`SELECT plan_key, display_name, message_limit FROM admin_plans WHERE LOWER(display_name) = ? OR plan_key = ?`, planKey, planKey).Scan(&planKey, &displayName, &messageLimit)
 	if err != nil {
-		if strings.Contains(planKey, "pro") {
-			planKey = "pro"
-			displayName = "Pro"
-			messageLimit = 2000
-		} else if strings.Contains(planKey, "business") {
-			planKey = "business"
-			displayName = "Business"
-			messageLimit = -1
-		} else {
-			planKey = "starter"
-			displayName = "Starter"
-			messageLimit = 500
+		switch {
+		case strings.Contains(planKey, "professional"):
+			planKey, displayName, messageLimit = "professional", "Professional", 4800
+		case strings.Contains(planKey, "growth"):
+			planKey, displayName, messageLimit = "growth", "Growth", 2800
+		case strings.Contains(planKey, "starter"):
+			planKey, displayName, messageLimit = "starter", "Starter", 1700
+		default:
+			planKey, displayName, messageLimit = "free", "Free", 150
 		}
 	}
 
@@ -1288,28 +1288,37 @@ func (db *DB) SyncShopPlanWithLineItem(shop string, planName string, lineItemId 
 	now := time.Now()
 	nextReset := now.AddDate(0, 1, 0)
 
+	// Choosing/confirming a plan counts as the merchant having selected one.
 	if err == sql.ErrNoRows {
 		_, err = db.conn.Exec(
-			`INSERT INTO settings(shop_domain, plan_key, plan_name, message_limit, messages_sent_this_month, limit_reset_at, subscription_line_item_id)
-			 VALUES(?, ?, ?, ?, 0, ?, ?)`,
+			`INSERT INTO settings(shop_domain, plan_key, plan_name, message_limit, messages_sent_this_month, limit_reset_at, subscription_line_item_id, plan_selected)
+			 VALUES(?, ?, ?, ?, 0, ?, ?, 1)`,
 			shop, planKey, displayName, messageLimit, nextReset, lineItemId)
 		return err
 	} else if err == nil {
 		if currentPlanKey != planKey || limitResetAt == nil {
 			_, err = db.conn.Exec(
-				`UPDATE settings SET plan_key = ?, plan_name = ?, message_limit = ?, messages_sent_this_month = 0, limit_reset_at = ?, subscription_line_item_id = ?
+				`UPDATE settings SET plan_key = ?, plan_name = ?, message_limit = ?, messages_sent_this_month = 0, limit_reset_at = ?, subscription_line_item_id = ?, plan_selected = 1
 				 WHERE shop_domain = ?`,
 				planKey, displayName, messageLimit, nextReset, lineItemId, shop)
 		} else {
 			// Update subscription line item ID even if plan didn't change (e.g. renewal or reinstallation)
 			_, err = db.conn.Exec(
-				`UPDATE settings SET plan_key = ?, plan_name = ?, message_limit = ?, subscription_line_item_id = ?
+				`UPDATE settings SET plan_key = ?, plan_name = ?, message_limit = ?, subscription_line_item_id = ?, plan_selected = 1
 				 WHERE shop_domain = ?`,
 				planKey, displayName, messageLimit, lineItemId, shop)
 		}
 		return err
 	}
 	return err
+}
+
+// IsPlanSelected reports whether the shop has explicitly chosen a plan (free or
+// paid) since install. Used to gate app entry until a plan is picked.
+func (db *DB) IsPlanSelected(shop string) bool {
+	var selected int
+	db.conn.QueryRow(`SELECT COALESCE(plan_selected,0) FROM settings WHERE shop_domain=?`, shop).Scan(&selected)
+	return selected == 1
 }
 
 func (db *DB) GetSettings(shop string) (models.Settings, error) {
@@ -1324,9 +1333,9 @@ func (db *DB) GetSettings(shop string) (models.Settings, error) {
 		        COALESCE(sending_window_start,-1),
 		        COALESCE(sending_window_end,-1),
 		        COALESCE(win_back_inactive_days,0),
-		        COALESCE(plan_key,'starter'),
-		        COALESCE(plan_name,'Starter'),
-		        COALESCE(message_limit,500),
+		        COALESCE(plan_key,'free'),
+		        COALESCE(plan_name,'Free'),
+		        COALESCE(message_limit,150),
 		        COALESCE(messages_sent_this_month,0),
 		        limit_reset_at,
 		        COALESCE(subscription_line_item_id,'')
@@ -1974,7 +1983,7 @@ func (db *DB) GetStats(shop string) (models.DashboardStats, error) {
 	db.conn.QueryRow(`SELECT COUNT(*) FROM contacts WHERE shop_domain=? AND opted_out=0`, shop).Scan(&s.TotalContacts)
 
 	db.conn.QueryRow(
-		`SELECT COALESCE(plan_name,'Starter'), COALESCE(message_limit,500), COALESCE(messages_sent_this_month,0), limit_reset_at
+		`SELECT COALESCE(plan_name,'Free'), COALESCE(message_limit,150), COALESCE(messages_sent_this_month,0), limit_reset_at
 		 FROM settings WHERE shop_domain=?`, shop).Scan(&s.PlanName, &s.MessageLimit, &s.MessagesSentThisMonth, &s.LimitResetAt)
 
 	return s, nil

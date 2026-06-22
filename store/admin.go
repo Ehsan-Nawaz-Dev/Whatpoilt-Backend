@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -142,25 +143,65 @@ func (db *DB) ListShopsNeedingReauth() ([]ShopReauthInfo, error) {
 
 // ─── Admin: Plans ─────────────────────────────────────────────────────────────
 
+// planFeatures are shared across all tiers — they differ only by monthly volume.
+var planFeatures = []string{
+	"Automated WhatsApp Order Confirmations",
+	"Abandoned Checkout Recovery",
+	"Order Fulfillment Notifications",
+	"Order Cancellation Notifications",
+	"Customizable Message Templates",
+	"Automated Order Tag Updates",
+	"Connect WhatsApp using \"Link a Device\"",
+	"Real-Time Analytics & Reporting",
+}
+
+func withVolume(volume string) []string {
+	return append([]string{volume}, planFeatures...)
+}
+
 var defaultAdminPlans = []models.AdminPlan{
 	{
-		PlanKey: "starter", DisplayName: "Starter", Price: 9.99,
-		Features:        []string{"500 WhatsApp messages/month", "5 automation rules", "3 message templates", "Email support"},
-		MessageLimit:    500, AutomationLimit: 5, TemplateLimit: 3, IsActive: true,
+		PlanKey: "free", DisplayName: "Free", Price: 0,
+		Features:     withVolume("Up to 150 messages/month"),
+		MessageLimit: 150, AutomationLimit: -1, TemplateLimit: -1, IsActive: true,
 	},
 	{
-		PlanKey: "pro", DisplayName: "Pro", Price: 29.99,
-		Features:        []string{"2,000 WhatsApp messages/month", "Unlimited automations", "Unlimited templates", "Priority support", "Typing simulation"},
-		MessageLimit:    2000, AutomationLimit: -1, TemplateLimit: -1, IsActive: true,
+		PlanKey: "starter", DisplayName: "Starter", Price: 4.99,
+		Features:     withVolume("Up to 1,700 messages/month"),
+		MessageLimit: 1700, AutomationLimit: -1, TemplateLimit: -1, IsActive: true,
 	},
 	{
-		PlanKey: "business", DisplayName: "Business", Price: 79.99,
-		Features:        []string{"Unlimited messages", "Unlimited automations", "Unlimited templates", "Dedicated support", "Custom integrations"},
-		MessageLimit:    -1, AutomationLimit: -1, TemplateLimit: -1, IsActive: true,
+		PlanKey: "growth", DisplayName: "Growth", Price: 9.99,
+		Features:     withVolume("Up to 2,800 messages/month"),
+		MessageLimit: 2800, AutomationLimit: -1, TemplateLimit: -1, IsActive: true,
+	},
+	{
+		PlanKey: "professional", DisplayName: "Professional", Price: 14.99,
+		Features:     withVolume("Up to 4,800 messages/month"),
+		MessageLimit: 4800, AutomationLimit: -1, TemplateLimit: -1, IsActive: true,
 	},
 }
 
+// nextPlan is the upgrade target when a shop exhausts its monthly limit.
+var nextPlan = map[string]string{
+	"free": "starter", "starter": "growth", "growth": "professional",
+}
+
+// NextPlanKey returns the plan a shop should upgrade to when over its limit, or
+// "" if it's already on the top tier.
+func NextPlanKey(planKey string) string {
+	return nextPlan[strings.ToLower(planKey)]
+}
+
 func (db *DB) SeedDefaultAdminPlans() error {
+	// One-time restructure from the old Starter/Pro/Business lineup to the
+	// Free/Starter/Growth/Professional lineup. Guarded by an admin_config flag so
+	// it runs once and never clobbers later admin edits.
+	if db.GetAdminConfigValue("plans_migrated_v2") == "" {
+		db.conn.Exec(`DELETE FROM admin_plans WHERE plan_key IN ('pro','business','starter')`)
+		_ = db.SetAdminConfigValue("plans_migrated_v2", "1")
+	}
+
 	for _, p := range defaultAdminPlans {
 		featJSON, _ := json.Marshal(p.Features)
 		db.conn.Exec(`
