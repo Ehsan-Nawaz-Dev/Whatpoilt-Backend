@@ -100,11 +100,16 @@ func (h *BillingHandler) Create(c *gin.Context) {
 	}
 	if err != nil {
 		slog.Error("billing: appSubscriptionCreate failed", "shop", shop, "plan", planKey, "err", err)
-		// Token revoked/invalid → the merchant must reconnect to refresh it.
+		// Token revoked/invalid → the cached offline session holds a dead token and
+		// the embedded library keeps reusing it. Delete it so the next app load is
+		// forced to mint a fresh token via token exchange, then ask the merchant to
+		// reopen the app.
 		if isReauthRequiredError(err) {
 			_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+			_ = h.db.DeleteSession("offline_" + shop)
+			slog.Warn("billing: invalid token — cleared offline session to force re-exchange", "shop", shop)
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
-				"error": "Your Shopify connection has expired. Please reinstall (or close and reopen) the app, then try again.",
+				"error": "Your Shopify connection was reset. Please close this app and reopen it from your Shopify admin, then choose a plan again.",
 			})
 			return
 		}
