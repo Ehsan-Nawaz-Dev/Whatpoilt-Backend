@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +40,7 @@ func (h *SessionHandler) Store(c *gin.Context) {
 		Shop        string `json:"shop"`
 		AccessToken string `json:"accessToken"`
 		IsOnline    bool   `json:"isOnline"`
+		Expires     string `json:"expires"` // empty/absent ⇒ legacy non-expiring token
 	}
 	if err := json.Unmarshal(body, &s); err != nil || s.ID == "" || s.Shop == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id and shop required"})
@@ -56,6 +58,20 @@ func (h *SessionHandler) Store(c *gin.Context) {
 		// A fresh offline token just arrived (new OAuth) — the shop is reconnected,
 		// so clear any pending re-auth flag set by a previous failed API call.
 		_ = h.db.ClearShopReauth(s.Shop)
+
+		// The embedded auth strategy mints NON-EXPIRING offline tokens (no `expires`),
+		// which Shopify is deprecating. Migrate to an expiring token in the background
+		// so the deprecated token is never used for Admin API calls. Idempotent-ish:
+		// only fires for tokens without an expiry, so already-migrated sessions skip it.
+		if s.Expires == "" {
+			go func(shop, token string) {
+				if _, err := h.db.MigrateToExpiringToken(shop, token); err != nil {
+					slog.Warn("background offline-token migration failed", "shop", shop, "err", err)
+				} else {
+					slog.Info("migrated offline token to expiring on session store", "shop", shop)
+				}
+			}(s.Shop, s.AccessToken)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

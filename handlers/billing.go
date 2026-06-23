@@ -83,8 +83,14 @@ func (h *BillingHandler) Create(c *gin.Context) {
 		})
 	}
 
+	// 3-day free trial on Starter only; Growth and Professional have no trial.
+	trialDays := 0
+	if planKey == "starter" {
+		trialDays = 3
+	}
+
 	returnURL := fmt.Sprintf("%s/billing/confirm?shop=%s&plan=%s", config.App.PublicURL, shop, planKey)
-	confirmationURL, err := createAppSubscription(shop, token, name+" Plan", returnURL, 3, lineItems)
+	confirmationURL, err := createAppSubscription(shop, token, name+" Plan", returnURL, trialDays, lineItems)
 	if err != nil {
 		slog.Error("billing: appSubscriptionCreate failed", "shop", shop, "plan", planKey, "err", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Could not start checkout: " + err.Error()})
