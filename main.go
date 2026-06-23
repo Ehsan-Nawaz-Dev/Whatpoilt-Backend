@@ -425,10 +425,17 @@ func main() {
 			c.JSON(200, gin.H{"ok": true, "plan_selected": db.IsPlanSelected(req.ShopDomain)})
 		})
 
-		// Whether the merchant has chosen a plan yet — gates app entry on install.
+		// Plan gate + current plan summary for the app header.
 		internal.GET("/plan-status", func(c *gin.Context) {
 			shop := c.Query("shop")
-			c.JSON(200, gin.H{"plan_selected": db.IsPlanSelected(shop)})
+			s, _ := db.GetSettings(shop)
+			c.JSON(200, gin.H{
+				"plan_selected": db.IsPlanSelected(shop),
+				"plan_key":      s.PlanKey,
+				"plan_name":     s.PlanName,
+				"message_limit": s.MessageLimit,
+				"messages_sent": s.MessagesSentThisMonth,
+			})
 		})
 
 		// Records the chosen plan (used for the free plan, which has no Shopify
