@@ -91,8 +91,23 @@ func (h *BillingHandler) Create(c *gin.Context) {
 
 	returnURL := fmt.Sprintf("%s/billing/confirm?shop=%s&plan=%s", config.App.PublicURL, shop, planKey)
 	confirmationURL, err := createAppSubscription(shop, token, name+" Plan", returnURL, trialDays, lineItems)
+
+	// Legacy non-expiring token rejected → migrate to an expiring one and retry once.
+	if err != nil {
+		if newToken, ok := migrateLegacyToken(h.db, shop, token, err); ok {
+			confirmationURL, err = createAppSubscription(shop, newToken, name+" Plan", returnURL, trialDays, lineItems)
+		}
+	}
 	if err != nil {
 		slog.Error("billing: appSubscriptionCreate failed", "shop", shop, "plan", planKey, "err", err)
+		// Token revoked/invalid → the merchant must reconnect to refresh it.
+		if isReauthRequiredError(err) {
+			_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": "Your Shopify connection has expired. Please reinstall (or close and reopen) the app, then try again.",
+			})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Could not start checkout: " + err.Error()})
 		return
 	}

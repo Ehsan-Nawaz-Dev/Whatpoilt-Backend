@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -40,7 +39,6 @@ func (h *SessionHandler) Store(c *gin.Context) {
 		Shop        string `json:"shop"`
 		AccessToken string `json:"accessToken"`
 		IsOnline    bool   `json:"isOnline"`
-		Expires     string `json:"expires"` // empty/absent ⇒ legacy non-expiring token
 	}
 	if err := json.Unmarshal(body, &s); err != nil || s.ID == "" || s.Shop == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id and shop required"})
@@ -53,25 +51,16 @@ func (h *SessionHandler) Store(c *gin.Context) {
 	// Mirror the access token to shop_tokens so webhook handlers (order tagging,
 	// refund lookups, etc.) always have a fresh token even without the register-shop call.
 	// Only offline sessions have long-lived, valid tokens for background tasks.
+	//
+	// NOTE: do NOT migrate the token to an expiring one here. The frontend re-stores
+	// its own (original) token on every load, so migrating + revoking it server-side
+	// desyncs the two and leaves a revoked token → 401s. Token migration happens
+	// lazily on a real 403 ("Non-expiring access tokens") instead.
 	if s.AccessToken != "" && !s.IsOnline {
 		_ = h.db.SetShopToken(s.Shop, s.AccessToken)
 		// A fresh offline token just arrived (new OAuth) — the shop is reconnected,
 		// so clear any pending re-auth flag set by a previous failed API call.
 		_ = h.db.ClearShopReauth(s.Shop)
-
-		// The embedded auth strategy mints NON-EXPIRING offline tokens (no `expires`),
-		// which Shopify is deprecating. Migrate to an expiring token in the background
-		// so the deprecated token is never used for Admin API calls. Idempotent-ish:
-		// only fires for tokens without an expiry, so already-migrated sessions skip it.
-		if s.Expires == "" {
-			go func(shop, token string) {
-				if _, err := h.db.MigrateToExpiringToken(shop, token); err != nil {
-					slog.Warn("background offline-token migration failed", "shop", shop, "err", err)
-				} else {
-					slog.Info("migrated offline token to expiring on session store", "shop", shop)
-				}
-			}(s.Shop, s.AccessToken)
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
