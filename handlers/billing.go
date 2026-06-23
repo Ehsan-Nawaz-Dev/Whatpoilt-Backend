@@ -99,6 +99,15 @@ func (h *BillingHandler) Create(c *gin.Context) {
 		}
 	}
 	if err != nil {
+		// Diagnostic: does this same token work for a basic query? If yes, the token
+		// is fine and the problem is billing/pricing config (e.g. the app is on
+		// Shopify-managed pricing, which blocks the Billing API). If no, the token
+		// itself is invalid.
+		if probeErr := probeToken(shop, token); probeErr != nil {
+			slog.Error("billing: token is INVALID for a basic shop query too — token problem", "shop", shop, "probe_err", probeErr)
+		} else {
+			slog.Warn("billing: token is VALID for a shop query, but appSubscriptionCreate was rejected — check Partner Dashboard pricing is 'Manual pricing' (managed pricing blocks the Billing API)", "shop", shop)
+		}
 		slog.Error("billing: appSubscriptionCreate failed", "shop", shop, "plan", planKey, "err", err)
 		// Token revoked/invalid → the cached offline session holds a dead token and
 		// the embedded library keeps reusing it. Delete it so the next app load is
@@ -263,6 +272,27 @@ func fetchActiveSubscription(shop, token string) (active bool, usageLineItemID s
 		}
 	}
 	return active, usageLineItemID, nil
+}
+
+// probeToken checks whether the access token works for a basic Admin API query.
+// Used to distinguish a bad token from a billing/pricing config problem.
+func probeToken(shop, token string) error {
+	body, err := shopifyGraphQL(shop, token, `{ shop { name } }`, nil)
+	if err != nil {
+		return err
+	}
+	var r struct {
+		Data struct {
+			Shop struct{ Name string } `json:"shop"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return err
+	}
+	if r.Data.Shop.Name == "" {
+		return fmt.Errorf("no shop returned: %s", string(body))
+	}
+	return nil
 }
 
 // shopifyGraphQL posts a GraphQL request to the shop's Admin API.
