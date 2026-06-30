@@ -3,12 +3,52 @@
 package handlers
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/whatpilot/backend/config"
 	"github.com/whatpilot/backend/store"
 	"github.com/whatpilot/backend/whatsapp"
 )
+
+// WebhookEntry handles Shopify's mandatory compliance webhooks delivered to the
+// bare /webhooks URL (customers/redact, shop/redact, customers/data_request),
+// per shopify.app.toml. HMAC-verified: returns 401 on a bad signature (as Shopify
+// requires) and 200 otherwise so Shopify doesn't retry. Without this route these
+// webhooks would 404 — a hard App Store failure.
+func (h *GDPRHandler) WebhookEntry(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot read body"})
+		return
+	}
+	if !verifyShopifyHMAC(body, c.GetHeader("X-Shopify-Hmac-Sha256"), config.App.ShopifyAPISecret) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid HMAC signature"})
+		return
+	}
+
+	var payload struct {
+		ShopDomain string `json:"shop_domain"`
+		Customer   struct {
+			Phone string `json:"phone"`
+		} `json:"customer"`
+	}
+	_ = json.Unmarshal(body, &payload)
+
+	switch c.GetHeader("X-Shopify-Topic") {
+	case "customers/redact":
+		_ = h.db.PurgeCustomer(payload.ShopDomain, payload.Customer.Phone)
+	case "shop/redact":
+		h.registry.Remove(payload.ShopDomain)
+		_ = h.db.PurgeShop(payload.ShopDomain)
+	case "customers/data_request":
+		// Acknowledged — the only PII held is phone + message logs, already visible
+		// to the merchant in-app. Nothing further to compile.
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
 
 type GDPRHandler struct {
 	db       *store.DB

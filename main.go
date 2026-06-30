@@ -353,6 +353,9 @@ func main() {
 	// ── Shopify webhook routes (HMAC verified, no API key header) ─────────────
 	hooks := r.Group("/webhooks")
 	{
+		// Shopify's mandatory compliance webhooks (customers/redact, shop/redact,
+		// customers/data_request) are delivered to the bare /webhooks URL.
+		hooks.POST("",                  gdprH.WebhookEntry)
 		hooks.POST("/orders/created",   shopH.OrderCreated)
 		hooks.POST("/orders/fulfilled", shopH.OrderFulfilled)
 		hooks.POST("/orders/cancelled", shopH.OrderCancelled)
