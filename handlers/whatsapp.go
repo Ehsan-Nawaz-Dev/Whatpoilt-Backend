@@ -1,12 +1,8 @@
 package handlers
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/whatpilot/backend/middleware"
@@ -41,50 +37,31 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": string(mgr.GetStatus()), "stats": stats})
 }
 
-// GET /api/whatsapp/qr  — Server-Sent Events
-func (h *WhatsAppHandler) StreamQR(c *gin.Context) {
+// POST /api/whatsapp/connect — start (or restart) the QR pairing flow.
+// The flow runs in the background; the frontend polls QRPoll for the result.
+func (h *WhatsAppHandler) Connect(c *gin.Context) {
 	shop := middleware.ShopFrom(c)
 	mgr, err := h.registry.For(shop)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	mgr.StartPairing()
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
 
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	sub := mgr.Subscribe()
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
-	defer func() {
-		cancel()
-		mgr.Unsubscribe(sub)
-	}()
-
-	go mgr.StartPairing(ctx)
-
-	writeSSE := func(evt whatsapp.QREvent) {
-		data, _ := json.Marshal(evt)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-		c.Writer.Flush()
+// GET /api/whatsapp/qr — poll the current QR image + connection status.
+// Replaces the old SSE stream, which broke when proxied through Vercel's
+// serverless functions (timeouts cancelled the pairing mid-handshake).
+func (h *WhatsAppHandler) QRPoll(c *gin.Context) {
+	shop := middleware.ShopFrom(c)
+	mgr, err := h.registry.For(shop)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-
-	for {
-		select {
-		case evt, ok := <-sub:
-			if !ok {
-				return
-			}
-			writeSSE(evt)
-			if evt.Event != "code" {
-				return
-			}
-		case <-ctx.Done():
-			writeSSE(whatsapp.QREvent{Event: "timeout", Message: "Session timed out"})
-			return
-		}
-	}
+	status, qr := mgr.GetPairingState()
+	c.JSON(http.StatusOK, gin.H{"status": string(status), "qr": qr})
 }
 
 // POST /api/whatsapp/disconnect

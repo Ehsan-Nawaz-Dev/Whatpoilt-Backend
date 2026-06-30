@@ -284,7 +284,8 @@ func main() {
 	{
 		wa := api.Group("/whatsapp")
 		wa.GET("/status",     waH.Status)
-		wa.GET("/qr",         waH.StreamQR)
+		wa.POST("/connect",   waH.Connect)
+		wa.GET("/qr",         waH.QRPoll)
 		wa.POST("/disconnect", waH.Disconnect)
 		wa.POST("/logout",    waH.Logout)
 		wa.POST("/send",      sendRL.Limit(), waH.SendMessage) // rate-limited

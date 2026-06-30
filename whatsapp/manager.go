@@ -58,7 +58,10 @@ type Manager struct {
 	status      Status
 	subscribers map[chan QREvent]struct{}
 
-	pairingMu sync.Mutex // prevents two goroutines starting QR flow simultaneously
+	lastQR     string             // latest QR data-URI for polling ("" when none/connected)
+	pairCancel context.CancelFunc // cancels the in-progress pairing flow, if any
+
+	pairingMu sync.Mutex // serializes QR pairing flows (only one at a time)
 
 	onOptOut          OptOutFunc        // injected by registry
 	onConfirmation    ConfirmationFunc  // injected by registry (text messages)
@@ -146,18 +149,39 @@ func (m *Manager) ConnectExisting() error {
 	return nil
 }
 
-// StartPairing initiates the QR-code login flow. Run in a goroutine.
-// Only one pairing flow can be active at a time (pairingMu).
-func (m *Manager) StartPairing(ctx context.Context) {
-	if !m.pairingMu.TryLock() {
-		m.broadcast(QREvent{Event: "error", Message: "A pairing flow is already in progress"})
-		return
+// StartPairing begins (or restarts) the QR-code login flow in the BACKGROUND,
+// independent of any HTTP request. The latest QR code and status are stored on the
+// manager for the frontend to poll (GetPairingState). This decoupling is essential:
+// tying the flow to an SSE/request lifecycle meant a proxy timeout cancelled the
+// pairing mid-handshake. Safe to call repeatedly — a new call cancels the previous
+// flow and starts fresh.
+func (m *Manager) StartPairing() {
+	m.mu.Lock()
+	if m.pairCancel != nil {
+		m.pairCancel() // cancel any in-progress flow
 	}
-	defer m.pairingMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	m.pairCancel = cancel
+	m.lastQR = ""
+	m.status = StatusConnecting
+	m.mu.Unlock()
 
+	go func() {
+		// Wait for any previous flow to finish before starting (it exits on cancel).
+		m.pairingMu.Lock()
+		defer m.pairingMu.Unlock()
+		defer cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		m.runPairing(ctx)
+	}()
+}
+
+func (m *Manager) runPairing(ctx context.Context) {
 	deviceStore, err := m.container.GetFirstDevice(ctx)
 	if err != nil {
-		m.broadcast(QREvent{Event: "error", Message: err.Error()})
+		m.setStatus(StatusDisconnected)
 		return
 	}
 
@@ -170,7 +194,7 @@ func (m *Manager) StartPairing(ctx context.Context) {
 		}
 		deviceStore, err = m.container.GetFirstDevice(ctx)
 		if err != nil {
-			m.broadcast(QREvent{Event: "error", Message: err.Error()})
+			m.setStatus(StatusDisconnected)
 			return
 		}
 	}
@@ -178,18 +202,15 @@ func (m *Manager) StartPairing(ctx context.Context) {
 	client := m.buildClient(deviceStore)
 	m.mu.Lock()
 	m.client = client
-	m.status = StatusConnecting
 	m.mu.Unlock()
 
 	qrChan, err := client.GetQRChannel(ctx)
 	if err != nil {
 		m.setStatus(StatusDisconnected)
-		m.broadcast(QREvent{Event: "error", Message: err.Error()})
 		return
 	}
 	if err := client.Connect(); err != nil {
 		m.setStatus(StatusDisconnected)
-		m.broadcast(QREvent{Event: "error", Message: err.Error()})
 		return
 	}
 
@@ -200,20 +221,33 @@ func (m *Manager) StartPairing(ctx context.Context) {
 			if err != nil {
 				continue
 			}
-			m.broadcast(QREvent{
-				Event: "code",
-				Code:  "data:image/png;base64," + base64.StdEncoding.EncodeToString(img),
-			})
+			m.mu.Lock()
+			m.lastQR = "data:image/png;base64," + base64.StdEncoding.EncodeToString(img)
+			m.status = StatusConnecting
+			m.mu.Unlock()
 		case "success":
-			m.setStatus(StatusConnected)
-			m.broadcast(QREvent{Event: "success", Message: "WhatsApp connected successfully"})
+			m.mu.Lock()
+			m.lastQR = ""
+			m.status = StatusConnected
+			m.mu.Unlock()
+			slog.Info("WhatsApp paired successfully")
 		case "timeout":
-			m.setStatus(StatusDisconnected)
-			m.broadcast(QREvent{Event: "timeout", Message: "QR code expired. Please try again."})
-		default:
-			m.broadcast(QREvent{Event: evt.Event})
+			m.mu.Lock()
+			m.lastQR = ""
+			if m.status != StatusConnected {
+				m.status = StatusDisconnected
+			}
+			m.mu.Unlock()
 		}
 	}
+}
+
+// GetPairingState returns the current status and the latest QR data-URI ("" when
+// there's no active QR or the device is connected). Polled by the frontend.
+func (m *Manager) GetPairingState() (Status, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status, m.lastQR
 }
 
 func (m *Manager) Disconnect() {
