@@ -122,7 +122,11 @@ func (h *ShopifyHandler) SetOrderLifecycleTag(shop string, orderID int64, newTag
 		return
 	}
 	if isReauthRequiredError(err) {
-		slog.Warn("shopify rejected token — flagging for re-auth", "shop", shop, "order", orderID, "err", err)
+		// Purge the rejected token so the next app load re-mints a valid one via
+		// token exchange (a non-expiring offline token is never re-exchanged while
+		// it lingers in storage — see InvalidateShopToken).
+		slog.Warn("shopify rejected token — purging so it re-mints on next app load", "shop", shop, "order", orderID, "err", err)
+		h.db.InvalidateShopToken(shop)
 		_ = h.db.FlagShopReauth(shop, reasonInvalidToken)
 		return
 	}

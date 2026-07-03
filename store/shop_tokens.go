@@ -39,6 +39,23 @@ func (db *DB) FlagShopReauth(shop, reason string) error {
 	return err
 }
 
+// InvalidateShopToken purges a shop's rejected offline token so the next embedded
+// app load is forced to re-mint a fresh one via token exchange.
+//
+// With the new embedded auth strategy, a non-expiring offline token is never
+// re-exchanged while it sits in session storage — so a revoked/stale token would
+// otherwise persist forever and 401 every background call (order tagging, etc.),
+// while register-shop keeps skipping the update because a token "exists".
+//
+// Deleting the offline session + clearing the shop_tokens fallback breaks that
+// deadlock: on the merchant's next visit authenticate.admin finds no session,
+// performs a fresh token exchange, and mirrors a valid token back to us.
+func (db *DB) InvalidateShopToken(shop string) {
+	// Best-effort: worst case the stale token lingers until the next visit.
+	_ = db.DeleteSession("offline_" + shop)
+	_, _ = db.conn.Exec(`UPDATE shop_tokens SET access_token='' WHERE shop_domain=?`, shop)
+}
+
 // ClearShopReauth clears the re-auth flag for a shop. Called when a fresh, valid
 // offline token arrives (new OAuth or token refresh).
 func (db *DB) ClearShopReauth(shop string) error {

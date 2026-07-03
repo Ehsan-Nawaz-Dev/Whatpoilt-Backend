@@ -1677,6 +1677,18 @@ func (db *DB) PurgeShop(shop string) error {
 			return err
 		}
 	}
+	// Clear the Shopify session + token too — essential on uninstall. Otherwise the
+	// (now revoked) offline token survives, and a reinstall reuses it, so every
+	// background Admin API call 401s. These tables use different shop-column names
+	// than the loop above (shopify_sessions.shop / shop_tokens.shop_domain).
+	if _, err := tx.Exec(`DELETE FROM shopify_sessions WHERE shop=?`, shop); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM shop_tokens WHERE shop_domain=?`, shop); err != nil {
+		tx.Rollback()
+		return err
+	}
 	return tx.Commit()
 }
 
