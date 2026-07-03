@@ -285,6 +285,7 @@ func main() {
 		wa := api.Group("/whatsapp")
 		wa.GET("/status",     waH.Status)
 		wa.POST("/connect",   waH.Connect)
+		wa.POST("/connect-phone", waH.ConnectPhone)
 		wa.GET("/qr",         waH.QRPoll)
 		wa.POST("/disconnect", waH.Disconnect)
 		wa.POST("/logout",    waH.Logout)

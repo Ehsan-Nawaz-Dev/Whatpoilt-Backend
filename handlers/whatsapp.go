@@ -50,9 +50,38 @@ func (h *WhatsAppHandler) Connect(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// GET /api/whatsapp/qr — poll the current QR image + connection status.
-// Replaces the old SSE stream, which broke when proxied through Vercel's
-// serverless functions (timeouts cancelled the pairing mid-handshake).
+// POST /api/whatsapp/connect-phone — start (or restart) the "link with phone
+// number" pairing flow. Expects {"phone": "<number with country code>"}. The flow
+// runs in the background; the frontend polls QRPoll for the returned pairing code
+// and the eventual connection status.
+func (h *WhatsAppHandler) ConnectPhone(c *gin.Context) {
+	shop := middleware.ShopFrom(c)
+	mgr, err := h.registry.For(shop)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req struct {
+		Phone string `json:"phone"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	phone, err := whatsapp.ValidatePhone(req.Phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	mgr.StartPhonePairing(phone)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /api/whatsapp/qr — poll the current QR image, phone pairing code, and
+// connection status. Replaces the old SSE stream, which broke when proxied through
+// Vercel's serverless functions (timeouts cancelled the pairing mid-handshake).
 func (h *WhatsAppHandler) QRPoll(c *gin.Context) {
 	shop := middleware.ShopFrom(c)
 	mgr, err := h.registry.For(shop)
@@ -60,8 +89,8 @@ func (h *WhatsAppHandler) QRPoll(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	status, qr := mgr.GetPairingState()
-	c.JSON(http.StatusOK, gin.H{"status": string(status), "qr": qr})
+	status, qr, code := mgr.GetPairingState()
+	c.JSON(http.StatusOK, gin.H{"status": string(status), "qr": qr, "code": code})
 }
 
 // POST /api/whatsapp/disconnect

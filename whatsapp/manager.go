@@ -58,10 +58,11 @@ type Manager struct {
 	status      Status
 	subscribers map[chan QREvent]struct{}
 
-	lastQR     string             // latest QR data-URI for polling ("" when none/connected)
-	pairCancel context.CancelFunc // cancels the in-progress pairing flow, if any
+	lastQR       string             // latest QR data-URI for polling ("" when none/connected)
+	lastPairCode string             // latest phone-number pairing code ("" when none/connected)
+	pairCancel   context.CancelFunc // cancels the in-progress pairing flow, if any
 
-	pairingMu sync.Mutex // serializes QR pairing flows (only one at a time)
+	pairingMu sync.Mutex // serializes pairing flows (QR or phone — only one at a time)
 
 	onOptOut          OptOutFunc        // injected by registry
 	onConfirmation    ConfirmationFunc  // injected by registry (text messages)
@@ -163,6 +164,7 @@ func (m *Manager) StartPairing() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	m.pairCancel = cancel
 	m.lastQR = ""
+	m.lastPairCode = ""
 	m.status = StatusConnecting
 	m.mu.Unlock()
 
@@ -175,6 +177,36 @@ func (m *Manager) StartPairing() {
 			return
 		}
 		m.runPairing(ctx)
+	}()
+}
+
+// StartPhonePairing begins (or restarts) the "link with phone number" login flow
+// in the BACKGROUND. Instead of a QR code, WhatsApp returns an 8-character pairing
+// code that the merchant types into their phone (Linked Devices → Link a Device →
+// "Link with phone number instead"). The code and status are stored on the manager
+// for the frontend to poll (GetPairingState). Mirrors StartPairing exactly so both
+// methods share the same single-flow-at-a-time semantics — starting one cancels the
+// other. `phone` must already be validated (digits with country code, no '+').
+func (m *Manager) StartPhonePairing(phone string) {
+	m.mu.Lock()
+	if m.pairCancel != nil {
+		m.pairCancel() // cancel any in-progress flow (QR or phone)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	m.pairCancel = cancel
+	m.lastQR = ""
+	m.lastPairCode = ""
+	m.status = StatusConnecting
+	m.mu.Unlock()
+
+	go func() {
+		m.pairingMu.Lock()
+		defer m.pairingMu.Unlock()
+		defer cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		m.runPhonePairing(ctx, phone)
 	}()
 }
 
@@ -242,12 +274,97 @@ func (m *Manager) runPairing(ctx context.Context) {
 	}
 }
 
-// GetPairingState returns the current status and the latest QR data-URI ("" when
-// there's no active QR or the device is connected). Polled by the frontend.
-func (m *Manager) GetPairingState() (Status, string) {
+// runPhonePairing performs the "link with phone number" handshake. Unlike QR
+// pairing (GetQRChannel must be called BEFORE Connect), phone pairing calls
+// Connect first and then requests a pairing code. Completion is signalled by the
+// events.Connected handler flipping status to Connected — this loop just holds the
+// pairing slot and keeps the code visible until then or until the ctx expires.
+func (m *Manager) runPhonePairing(ctx context.Context, phone string) {
+	deviceStore, err := m.container.GetFirstDevice(ctx)
+	if err != nil {
+		m.setStatus(StatusDisconnected)
+		return
+	}
+
+	// A fresh pairing needs an unpaired device (no stored JID). If the merchant
+	// previously disconnected without a full logout the old JID lingers — clear it.
+	if deviceStore.ID != nil {
+		if delErr := deviceStore.Delete(ctx); delErr != nil {
+			slog.Warn("could not clear old WA session before re-pairing", "err", delErr)
+		}
+		deviceStore, err = m.container.GetFirstDevice(ctx)
+		if err != nil {
+			m.setStatus(StatusDisconnected)
+			return
+		}
+	}
+
+	client := m.buildClient(deviceStore)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+
+	if err := client.Connect(); err != nil {
+		m.setStatus(StatusDisconnected)
+		return
+	}
+
+	// Connect() returns before the socket handshake fully settles; PairPhone sends
+	// an IQ that needs the websocket up, so give it a moment to connect.
+	for i := 0; i < 25 && !client.IsConnected(); i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	code, err := client.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	if err != nil {
+		slog.Warn("phone pairing failed", "phone", phone, "err", err)
+		client.Disconnect()
+		m.setStatus(StatusDisconnected)
+		return
+	}
+
+	m.mu.Lock()
+	m.lastPairCode = code
+	m.status = StatusConnecting
+	m.mu.Unlock()
+	slog.Info("phone pairing code generated", "phone", phone)
+
+	// Keep the code live until the device connects (events.Connected sets the
+	// status) or the 3-minute pairing window closes.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.mu.Lock()
+			m.lastPairCode = ""
+			if m.status != StatusConnected {
+				m.status = StatusDisconnected
+			}
+			m.mu.Unlock()
+			return
+		case <-ticker.C:
+			if m.GetStatus() == StatusConnected {
+				m.mu.Lock()
+				m.lastPairCode = ""
+				m.mu.Unlock()
+				return
+			}
+		}
+	}
+}
+
+// GetPairingState returns the current status, the latest QR data-URI, and the
+// latest phone pairing code. QR and code are "" when there's no active flow of
+// that kind or the device is connected. Polled by the frontend.
+func (m *Manager) GetPairingState() (Status, string, string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.status, m.lastQR
+	return m.status, m.lastQR, m.lastPairCode
 }
 
 func (m *Manager) Disconnect() {
