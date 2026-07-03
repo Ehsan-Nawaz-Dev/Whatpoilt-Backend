@@ -709,6 +709,15 @@ var defaultAutomationDefs = []struct {
 	{"Order Confirmation Reminder", models.TriggerOrderReminder,  "Order Confirmation Reminder", 0},
 }
 
+// defaultActiveAutomations are seeded already enabled (is_active=1) so the core
+// order-confirmation flow works the moment a merchant installs the app. Every
+// other automation starts disabled for the merchant to opt into. Names must match
+// the Name field in defaultAutomationDefs exactly.
+var defaultActiveAutomations = map[string]bool{
+	"Customer Order Confirmation": true, // sends the order-confirmation poll
+	"Post-Confirmation Reply":     true, // replies after the customer confirms
+}
+
 // SeedAutomations creates default automations for a shop if they don't exist.
 // Templates must already be seeded before calling this.
 func (db *DB) SeedAutomations(shop string) error {
@@ -734,11 +743,15 @@ func (db *DB) SeedAutomations(shop string) error {
 				shop, def.TemplateName,
 			).Scan(&templateID)
 		}
+		isActive := 0
+		if defaultActiveAutomations[def.Name] {
+			isActive = 1
+		}
 		db.conn.Exec(
 			`INSERT INTO automations
 			 (id,shop_domain,name,trigger_type,template_id,is_active,delay_minutes,created_at,updated_at)
-			 VALUES(?,?,?,?,?,0,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
-			uuid.NewString(), shop, def.Name, string(def.TriggerType), templateID, def.DelayMinutes,
+			 VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+			uuid.NewString(), shop, def.Name, string(def.TriggerType), templateID, isActive, def.DelayMinutes,
 		)
 	}
 	return nil
