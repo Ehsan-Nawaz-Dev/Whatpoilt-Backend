@@ -402,25 +402,45 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		if positiveOption == "" {
 			slog.Warn("skipping pending confirmation storing — no active poll found", "shop", shop)
 		} else {
-			// Resolve templates for the flow dynamically
+			// Resolve templates for the flow dynamically.
 			var noMsgVal, noTypeVal string
 			var noOptsVal []string
 			var step2Yes, step2No, step2Help string
 
+			// The cancellation sub-flow (customer taps "No / cancel") only runs when
+			// the merchant has enabled its automation in the Automation tab — so the
+			// toggle is authoritative, not just the underlying template's active flag.
+			//   Gate 1 ("Cancellation Verification"): gates the verification poll sent
+			//           when the customer taps "No". If off, tapping "No" does nothing.
+			//   Gate 2 (cancellation-notice automation): gates the final cancellation
+			//           message sent after the customer confirms on that poll. Re-checked
+			//           independently, so the poll can run without auto-sending the notice.
+			cancelFlowOn := false
 			if trigger == models.TriggerOrderCreated {
-				noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
-				step2Yes, _, _ = h.resolveTemplateByName(shop, "Order Cancellation", vars, trigger)
-				step2No = yesMsg // If they choose "No, keep order", send the confirmation reply
-				step2Help, _, _ = h.resolveTemplateByName(shop, "Customer Help Reply", vars, trigger)
+				if h.db.IsAutomationActiveByName(shop, "Cancellation Verification") {
+					cancelFlowOn = true
+					noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
+					step2No = yesMsg // If they choose "No, keep order", send the confirmation reply
+					step2Help, _, _ = h.resolveTemplateByName(shop, "Customer Help Reply", vars, trigger)
+					if h.db.IsAutomationActiveByName(shop, "Cancellation Notice") {
+						step2Yes, _, _ = h.resolveTemplateByName(shop, "Order Cancellation", vars, trigger)
+					}
+				}
 			} else if trigger == models.TriggerCODOrder {
-				noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
-				step2Yes, _, _ = h.resolveTemplateByName(shop, "COD Cancellation Reply", vars, trigger)
-				step2No = yesMsg // If they choose "No, keep order", send the COD confirmation reply
-				step2Help, _, _ = h.resolveTemplateByName(shop, "COD Help Reply", vars, trigger)
+				if h.db.IsAutomationActiveByName(shop, "Cancellation Verification") {
+					cancelFlowOn = true
+					noMsgVal, noTypeVal, noOptsVal = h.resolveTemplateByName(shop, "Cancellation Verification", vars, trigger)
+					step2No = yesMsg // If they choose "No, keep order", send the COD confirmation reply
+					step2Help, _, _ = h.resolveTemplateByName(shop, "COD Help Reply", vars, trigger)
+					if h.db.IsAutomationActiveByName(shop, "COD Cancellation Reply") {
+						step2Yes, _, _ = h.resolveTemplateByName(shop, "COD Cancellation Reply", vars, trigger)
+					}
+				}
 			}
 
-			// Fallback: if Cancellation Verification template wasn't resolved, use standard values
-			if noMsgVal == "" {
+			// Fallback: if the flow is on but the verification template wasn't
+			// resolved, use the standard negative-branch values.
+			if cancelFlowOn && noMsgVal == "" {
 				noMsgVal = noMsg
 				noTypeVal = noType
 				noOptsVal = noOpts

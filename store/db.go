@@ -766,6 +766,19 @@ func (db *DB) DefaultAutomationsSeeded(shop string) bool {
 	return count >= len(defaultAutomationDefs)
 }
 
+// IsAutomationActiveByName reports whether the named automation is enabled
+// (is_active=1) for the shop. Used to gate in-conversation follow-up branches
+// (e.g. the cancellation sub-flow) on the merchant's Automation tab toggle,
+// not just on the underlying template being active.
+func (db *DB) IsAutomationActiveByName(shop, name string) bool {
+	var active int
+	db.conn.QueryRow(
+		`SELECT is_active FROM automations WHERE shop_domain=? AND name=?`,
+		shop, name,
+	).Scan(&active)
+	return active == 1
+}
+
 // ─── Contacts ────────────────────────────────────────────────────────────────
 
 func (db *DB) ListContacts(shop string) ([]models.Contact, error) {

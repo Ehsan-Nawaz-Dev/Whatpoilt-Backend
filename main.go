@@ -144,9 +144,10 @@ func main() {
 			typeToSend = pc.ReplyNoType
 			optsToSend = pc.ReplyNoOptions
 
-			// If we matched the negative option and have Step 2 messages configured,
-			// store the Step 2 pending confirmation.
-			if pc.Step2YesMessage != "" {
+			// If we matched the negative option and the cancellation sub-flow is
+			// enabled (any Step 2 message present — the "yes/cancel" message may be
+			// empty when the cancellation-notice automation is off), store Step 2.
+			if pc.Step2YesMessage != "" || pc.Step2NoMessage != "" || pc.Step2HelpMessage != "" {
 				err := db.StorePendingConfirmationExtended(
 					shop, phone,
 					pc.Step2YesMessage, "text", []string{}, "✅ Yes, cancel my order",
