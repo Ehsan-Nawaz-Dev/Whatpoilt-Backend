@@ -175,6 +175,15 @@ func (w *Worker) tickReminders(_ context.Context) {
 				return
 			}
 
+			// Defense in depth: don't send a reminder that was queued while the
+			// automation was on if the merchant has since disabled it. This is the
+			// only reminder type, so it maps directly to "Order Confirmation Reminder".
+			if !w.db.IsAutomationActiveByName(r.ShopDomain, "Order Confirmation Reminder") {
+				log.Info("reminder automation disabled — skipping reminder")
+				w.db.CompleteReminder(r.ID, "skipped")
+				return
+			}
+
 			mgr, err := w.registry.For(r.ShopDomain)
 			if err != nil {
 				log.Error("reminder: registry lookup", "err", err)

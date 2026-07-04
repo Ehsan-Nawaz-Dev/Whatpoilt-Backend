@@ -465,9 +465,12 @@ func (h *ShopifyHandler) enqueueAutomations(shop string, autos []models.Automati
 		}
 	}
 
-	// Schedule a 24-hour no-reply reminder for order_created polls.
+	// Schedule a 24-hour no-reply reminder for order_created polls — but only if
+	// the merchant enabled the "Order Confirmation Reminder" automation. Without
+	// this gate the reminder is template-driven and fires even when the automation
+	// is toggled off in the Automation tab.
 	// The worker will skip it if the customer replies before the 24h window.
-	if trigger == models.TriggerOrderCreated {
+	if trigger == models.TriggerOrderCreated && h.db.IsAutomationActiveByName(shop, "Order Confirmation Reminder") {
 		var hasPoll bool
 		for _, la := range items {
 			if la.tmpl.MessageType == models.MessageTypePoll && !isPostConfirmationReply(la.auto.Name) {
