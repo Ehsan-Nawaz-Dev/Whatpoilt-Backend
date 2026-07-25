@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/whatpilot/backend/config"
 	"github.com/whatpilot/backend/models"
+	"github.com/whatpilot/backend/services"
 	"github.com/whatpilot/backend/store"
 	"github.com/whatpilot/backend/whatsapp"
 )

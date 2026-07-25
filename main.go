@@ -12,6 +12,7 @@ import (
 	"github.com/whatpilot/backend/handlers"
 	"github.com/whatpilot/backend/middleware"
 	"github.com/whatpilot/backend/models"
+	"github.com/whatpilot/backend/services"
 	"github.com/whatpilot/backend/store"
 	"github.com/whatpilot/backend/whatsapp"
 	"github.com/whatpilot/backend/worker"
