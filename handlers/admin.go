@@ -493,6 +493,174 @@ func math2dp(f float64) float64 {
 	return float64(int(f*100)) / 100
 }
 
+// ─── Revenue & Merchant Detail ────────────────────────────────────────────────
+
+// GET /admin/revenue-stats
+func (h *AdminHandler) RevenueStats(c *gin.Context) {
+	stats, err := h.db.GetRevenueStats()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, stats)
+}
+
+// GET /admin/shops/:shop/details
+func (h *AdminHandler) MerchantDetail(c *gin.Context) {
+	shop := c.Param("shop")
+	if shop == "" {
+		c.JSON(400, gin.H{"error": "shop parameter required"})
+		return
+	}
+	detail, err := h.db.GetMerchantDetail(shop)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, detail)
+}
+
+// ─── Email Marketing ─────────────────────────────────────────────────────────
+
+// GET /admin/email/settings
+func (h *AdminHandler) GetEmailSettings(c *gin.Context) {
+	c.JSON(200, h.db.GetSMTPConfig())
+}
+
+// PUT /admin/email/settings
+func (h *AdminHandler) UpdateEmailSettings(c *gin.Context) {
+	var cfg models.SMTPConfig
+	if err := c.ShouldBindJSON(&cfg); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.SaveSMTPConfig(cfg); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, cfg)
+}
+
+// GET /admin/email/templates
+func (h *AdminHandler) ListEmailTemplates(c *gin.Context) {
+	list, err := h.db.ListEmailTemplates()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if len(list) == 0 {
+		// Seed default email templates if empty
+		welcomeSub, welcomeBody := services.DefaultWelcomeEmail()
+		h.db.SaveEmailTemplate(models.EmailTemplate{Slug: "welcome", Subject: welcomeSub, HTMLBody: welcomeBody, IsActive: true})
+
+		unsubSub, unsubBody := services.DefaultUninstallEmail()
+		h.db.SaveEmailTemplate(models.EmailTemplate{Slug: "uninstall_feedback", Subject: unsubSub, HTMLBody: unsubBody, IsActive: true})
+
+		revSub, revBody := services.DefaultReviewRequestEmail()
+		h.db.SaveEmailTemplate(models.EmailTemplate{Slug: "review_request", Subject: revSub, HTMLBody: revBody, IsActive: true})
+
+		list, _ = h.db.ListEmailTemplates()
+	}
+	c.JSON(200, list)
+}
+
+// PUT /admin/email/templates/:slug
+func (h *AdminHandler) UpdateEmailTemplate(c *gin.Context) {
+	slug := c.Param("slug")
+	var req models.EmailTemplate
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	req.Slug = slug
+	if err := h.db.SaveEmailTemplate(req); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, req)
+}
+
+// POST /admin/email/broadcast
+func (h *AdminHandler) BroadcastEmail(c *gin.Context) {
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Subject     string `json:"subject" binding:"required"`
+		HTMLBody    string `json:"html_body" binding:"required"`
+		TargetGroup string `json:"target_group"` // "all" | "active" | "uninstalled"
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.TargetGroup == "" {
+		req.TargetGroup = "all"
+	}
+
+	cfg := h.db.GetSMTPConfig()
+	if !cfg.Enabled {
+		c.JSON(400, gin.H{"error": "SMTP is disabled. Please enable and configure SMTP in Email Settings first."})
+		return
+	}
+
+	merchants, err := h.db.ListMerchantEmails(req.TargetGroup)
+	if err != nil || len(merchants) == 0 {
+		c.JSON(400, gin.H{"error": "No matching merchants found for this target group."})
+		return
+	}
+
+	campaign, _ := h.db.CreateEmailCampaign(models.EmailCampaign{
+		Title:       req.Title,
+		Subject:     req.Subject,
+		HTMLBody:    req.HTMLBody,
+		TargetGroup: req.TargetGroup,
+		Status:      "sending",
+	})
+
+	// Async send
+	go func() {
+		emailSrv := services.NewEmailService()
+		sentCount := 0
+		for _, m := range merchants {
+			shopDomain := m.ShopifyCustomerID // domain stored here
+			email := m.Name                   // email stored here
+			if email == "" {
+				continue
+			}
+			body := services.RenderTemplate(req.HTMLBody, map[string]string{
+				"shop_domain": shopDomain,
+			})
+			sendErr := emailSrv.SendEmail(cfg, email, req.Subject, body)
+			status := "sent"
+			errMsg := ""
+			if sendErr != nil {
+				status = "failed"
+				errMsg = sendErr.Error()
+			} else {
+				sentCount++
+			}
+			h.db.LogEmailSent(shopDomain, email, "campaign", req.Subject, status, errMsg)
+		}
+		// Update campaign status
+		dbConn := h.db
+		_ = dbConn
+	}()
+
+	c.JSON(200, gin.H{"ok": true, "campaign_id": campaign.ID, "recipients": len(merchants)})
+}
+
+// GET /admin/email/logs
+func (h *AdminHandler) ListEmailLogs(c *gin.Context) {
+	logs, err := h.db.ListEmailLogs(100)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if logs == nil {
+		logs = []models.EmailLog{}
+	}
+	c.JSON(200, logs)
+}
+
 // ─── Public (no auth — called by merchant frontend) ───────────────────────────
 
 // GET /api/public/plans

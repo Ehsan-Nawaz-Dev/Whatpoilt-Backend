@@ -755,3 +755,80 @@ type SupportInfo struct {
 	Phone   string `json:"phone"`
 	Address string `json:"address"`
 }
+
+// ─── Email Marketing & Merchant Lifecycle Models ───────────────────────────────
+
+type SMTPConfig struct {
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	FromEmail string `json:"from_email"`
+	FromName  string `json:"from_name"`
+	Enabled   bool   `json:"enabled"`
+}
+
+type EmailTemplate struct {
+	ID        string    `json:"id"`
+	Slug      string    `json:"slug"` // "welcome" | "uninstall_feedback" | "review_request" | "custom"
+	Subject   string    `json:"subject"`
+	HTMLBody  string    `json:"html_body"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type EmailCampaign struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Subject     string     `json:"subject"`
+	HTMLBody    string     `json:"html_body"`
+	TargetGroup string     `json:"target_group"` // "all" | "active" | "uninstalled"
+	TotalSent   int        `json:"total_sent"`
+	Status      string     `json:"status"` // "draft" | "sending" | "sent" | "failed"
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	SentAt      *time.Time `json:"sent_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type EmailLog struct {
+	ID         string    `json:"id"`
+	ShopDomain string    `json:"shop_domain"`
+	Email      string    `json:"email"`
+	Type       string    `json:"type"` // "welcome" | "uninstall_feedback" | "review_request" | "campaign"
+	Subject    string    `json:"subject"`
+	Status     string    `json:"status"` // "sent" | "failed"
+	Error      string    `json:"error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type RevenueStats struct {
+	MRR              float64            `json:"mrr"`
+	ARR              float64            `json:"arr"`
+	TotalPayingShops int                `json:"total_paying_shops"`
+	FreeShops        int                `json:"free_shops"`
+	PlanBreakdown    map[string]int     `json:"plan_breakdown"`
+	RecentUpgrades   []AutoUpgradeEvent `json:"recent_upgrades"`
+}
+
+type AutoUpgradeEvent struct {
+	ShopDomain string    `json:"shop_domain"`
+	FromPlan   string    `json:"from_plan"`
+	ToPlan     string    `json:"to_plan"`
+	Charged    float64   `json:"charged"`
+	Timestamp  time.Time `json:"timestamp"`
+}
+
+type MerchantDetail struct {
+	ShopStats
+	PlanName               string       `json:"plan_name"`
+	PlanKey                string       `json:"plan_key"`
+	MessageLimit           int          `json:"message_limit"`
+	MessagesSentThisMonth  int          `json:"messages_sent_this_month"`
+	SubscriptionLineItemId string       `json:"subscription_line_item_id"`
+	InstalledAt            time.Time    `json:"installed_at"`
+	IsUninstalled          bool         `json:"is_uninstalled"`
+	MerchantEmail          string       `json:"merchant_email"`
+	TokenAtRisk            bool         `json:"token_at_risk"`
+	RecentLogs             []MessageLog `json:"recent_logs"`
+}

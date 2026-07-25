@@ -393,6 +393,7 @@ func main() {
 				AccessToken            string `json:"access_token" binding:"required"`
 				PlanName               string `json:"plan_name"`
 				SubscriptionLineItemId string `json:"subscription_line_item_id"`
+				Email                  string `json:"email"`
 			}
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
@@ -406,6 +407,47 @@ func main() {
 			// successfully in the embedded app, so any pending re-auth flag is
 			// stale — clear it (self-healing for the multi-tenant SaaS flow).
 			_ = db.ClearShopReauth(req.ShopDomain)
+
+			// Record merchant email and check if brand new install
+			if req.Email != "" {
+				isNewInstall := false
+				var count int
+				db.conn.QueryRow(`SELECT COUNT(*) FROM merchant_emails WHERE shop_domain=?`, req.ShopDomain).Scan(&count)
+				if count == 0 {
+					isNewInstall = true
+				}
+				db.UpsertMerchantEmail(req.ShopDomain, req.Email)
+
+				if isNewInstall {
+					go func(shop, toEmail string) {
+						cfg := db.GetSMTPConfig()
+						if !cfg.Enabled || toEmail == "" {
+							return
+						}
+						tmpl, err := db.GetEmailTemplateBySlug("welcome")
+						var subject, htmlBody string
+						if err == nil && tmpl.IsActive {
+							subject = tmpl.Subject
+							htmlBody = tmpl.HTMLBody
+						} else {
+							subject, htmlBody = services.DefaultWelcomeEmail()
+						}
+						body := services.RenderTemplate(htmlBody, map[string]string{
+							"shop_domain": shop,
+						})
+						emailSrv := services.NewEmailService()
+						sendErr := emailSrv.SendEmail(cfg, toEmail, subject, body)
+						status := "sent"
+						errMsg := ""
+						if sendErr != nil {
+							status = "failed"
+							errMsg = sendErr.Error()
+						}
+						db.LogEmailSent(shop, toEmail, "welcome", subject, status, errMsg)
+					}(req.ShopDomain, req.Email)
+				}
+			}
+
 			// Only update shop_tokens if we don't already have a valid offline
 			// session token. The frontend calls register-shop on every page load
 			// with the online (short-lived) token from authenticate.admin().
@@ -496,6 +538,16 @@ func main() {
 		adm.PUT("/announcements/:id",        admH.UpdateAnnouncement)
 		adm.DELETE("/announcements/:id",     admH.DeleteAnnouncement)
 
+		adm.GET("/revenue-stats",            admH.RevenueStats)
+		adm.GET("/shops/:shop/details",      admH.MerchantDetail)
+
+		adm.GET("/email/settings",           admH.GetEmailSettings)
+		adm.PUT("/email/settings",           admH.UpdateEmailSettings)
+		adm.GET("/email/templates",          admH.ListEmailTemplates)
+		adm.PUT("/email/templates/:slug",    admH.UpdateEmailTemplate)
+		adm.POST("/email/broadcast",         admH.BroadcastEmail)
+		adm.GET("/email/logs",               admH.ListEmailLogs)
+
 		adm.GET("/support",                  supportH.ListTickets)
 		adm.PUT("/support/:id",              supportH.ReplyTicket)
 		adm.DELETE("/support/:id",           supportH.DeleteTicket)
@@ -505,6 +557,48 @@ func main() {
 		adm.PUT("/faqs/:id",                 supportH.UpdateFAQ)
 		adm.DELETE("/faqs/:id",              supportH.DeleteFAQ)
 	}
+
+	// ── Webhooks (App Uninstall etc) ───────────────────────────────────────────
+	r.POST("/webhooks/app/uninstalled", func(c *gin.Context) {
+		shopDomain := c.GetHeader("X-Shopify-Shop-Domain")
+		if shopDomain != "" {
+			_ = db.MarkMerchantUninstalled(shopDomain)
+			slog.Info("app uninstalled webhook received", "shop", shopDomain)
+
+			// Send automated Uninstall Feedback Email if SMTP is configured
+			go func(shop string) {
+				cfg := db.GetSMTPConfig()
+				if !cfg.Enabled {
+					return
+				}
+				detail, err := db.GetMerchantDetail(shop)
+				if err != nil || detail.MerchantEmail == "" {
+					return
+				}
+				tmpl, err := db.GetEmailTemplateBySlug("uninstall_feedback")
+				var subject, htmlBody string
+				if err == nil && tmpl.IsActive {
+					subject = tmpl.Subject
+					htmlBody = tmpl.HTMLBody
+				} else {
+					subject, htmlBody = services.DefaultUninstallEmail()
+				}
+				body := services.RenderTemplate(htmlBody, map[string]string{
+					"shop_domain": shop,
+				})
+				emailSrv := services.NewEmailService()
+				sendErr := emailSrv.SendEmail(cfg, detail.MerchantEmail, subject, body)
+				status := "sent"
+				errMsg := ""
+				if sendErr != nil {
+					status = "failed"
+					errMsg = sendErr.Error()
+				}
+				db.LogEmailSent(shop, detail.MerchantEmail, "uninstall_feedback", subject, status, errMsg)
+			}(shopDomain)
+		}
+		c.JSON(200, gin.H{"ok": true})
+	})
 
 	// ── Public routes (no auth — read-only, consumed by merchant frontend) ────
 	pub := r.Group("/api/public")

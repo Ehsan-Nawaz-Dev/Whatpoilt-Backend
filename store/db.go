@@ -197,6 +197,54 @@ func (db *DB) migrate() error {
 			sort_order INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 
+		// ── Email Marketing & Merchant Lifecycle tables ───────────────────────
+		`CREATE TABLE IF NOT EXISTS email_templates (
+			id TEXT PRIMARY KEY,
+			slug TEXT UNIQUE NOT NULL,
+			subject TEXT NOT NULL,
+			html_body TEXT NOT NULL,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE TABLE IF NOT EXISTS email_campaigns (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			html_body TEXT NOT NULL,
+			target_group TEXT NOT NULL DEFAULT 'all',
+			total_sent INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'draft',
+			scheduled_at DATETIME,
+			sent_at DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE TABLE IF NOT EXISTS email_logs (
+			id TEXT PRIMARY KEY,
+			shop_domain TEXT NOT NULL,
+			email TEXT NOT NULL,
+			type TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'sent',
+			error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE TABLE IF NOT EXISTS merchant_emails (
+			shop_domain TEXT PRIMARY KEY,
+			email TEXT NOT NULL,
+			is_installed INTEGER NOT NULL DEFAULT 1,
+			installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			uninstalled_at DATETIME,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
+		`CREATE TABLE IF NOT EXISTS auto_upgrade_logs (
+			id TEXT PRIMARY KEY,
+			shop_domain TEXT NOT NULL,
+			from_plan TEXT NOT NULL,
+			to_plan TEXT NOT NULL,
+			charged REAL NOT NULL DEFAULT 0,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+
 		// ── indexes — every query filters by shop_domain ───────────────────
 		`CREATE INDEX IF NOT EXISTS idx_templates_shop   ON templates(shop_domain)`,
 		`CREATE INDEX IF NOT EXISTS idx_automations_shop ON automations(shop_domain, trigger_type, is_active)`,
@@ -1204,6 +1252,8 @@ func (db *DB) autoUpgradeOnLimit(shop, planKey, lineItemId string) (bool, error)
 		nextName, _, nextLimit := db.planInfo(next)
 		db.conn.Exec(`UPDATE settings SET plan_key=?, plan_name=?, message_limit=? WHERE shop_domain=?`,
 			next, nextName, nextLimit, shop)
+		db.conn.Exec(`INSERT INTO auto_upgrade_logs(id,shop_domain,from_plan,to_plan,charged,timestamp) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)`,
+			uuid.NewString(), shop, planKey, next, 0)
 		slog.Info("auto-upgraded free tier shop to next tier", "shop", shop, "from", planKey, "to", next)
 		return true, nil
 	}
@@ -1224,6 +1274,8 @@ func (db *DB) autoUpgradeOnLimit(shop, planKey, lineItemId string) (bool, error)
 	}
 	db.conn.Exec(`UPDATE settings SET plan_key=?, plan_name=?, message_limit=? WHERE shop_domain=?`,
 		next, nextName, nextLimit, shop)
+	db.conn.Exec(`INSERT INTO auto_upgrade_logs(id,shop_domain,from_plan,to_plan,charged,timestamp) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)`,
+		uuid.NewString(), shop, planKey, next, chargeAmount)
 	slog.Info("auto-upgraded shop to next package plan", "shop", shop, "from", planKey, "to", next, "package", nextName, "limit", nextLimit, "charged", chargeAmount)
 	return true, nil
 }

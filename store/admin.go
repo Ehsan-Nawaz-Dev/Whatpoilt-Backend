@@ -362,3 +362,276 @@ func (db *DB) GetShopOrderTag(shop, tagKey string) string {
 func (db *DB) SetShopOrderTag(shop, tagKey, value string) error {
 	return db.SetAdminConfigValue("shop:"+shop+":"+tagKey, value)
 }
+
+// ─── SMTP Config ─────────────────────────────────────────────────────────────
+
+func (db *DB) GetSMTPConfig() models.SMTPConfig {
+	var cfg models.SMTPConfig
+	cfg.Host = db.GetAdminConfigValue("smtp_host")
+	fmt.Sscanf(db.GetAdminConfigValue("smtp_port"), "%d", &cfg.Port)
+	if cfg.Port == 0 {
+		cfg.Port = 587
+	}
+	cfg.Username = db.GetAdminConfigValue("smtp_username")
+	cfg.Password = db.GetAdminConfigValue("smtp_password")
+	cfg.FromEmail = db.GetAdminConfigValue("smtp_from_email")
+	cfg.FromName = db.GetAdminConfigValue("smtp_from_name")
+	cfg.Enabled = db.GetAdminConfigValue("smtp_enabled") == "1"
+	return cfg
+}
+
+func (db *DB) SaveSMTPConfig(cfg models.SMTPConfig) error {
+	db.SetAdminConfigValue("smtp_host", cfg.Host)
+	db.SetAdminConfigValue("smtp_port", fmt.Sprintf("%d", cfg.Port))
+	db.SetAdminConfigValue("smtp_username", cfg.Username)
+	db.SetAdminConfigValue("smtp_password", cfg.Password)
+	db.SetAdminConfigValue("smtp_from_email", cfg.FromEmail)
+	db.SetAdminConfigValue("smtp_from_name", cfg.FromName)
+	enabledVal := "0"
+	if cfg.Enabled {
+		enabledVal = "1"
+	}
+	return db.SetAdminConfigValue("smtp_enabled", enabledVal)
+}
+
+// ─── Email Templates ─────────────────────────────────────────────────────────
+
+func (db *DB) ListEmailTemplates() ([]models.EmailTemplate, error) {
+	rows, err := db.conn.Query(`SELECT id,slug,subject,html_body,is_active,created_at,updated_at FROM email_templates ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.EmailTemplate
+	for rows.Next() {
+		var t models.EmailTemplate
+		var active int
+		rows.Scan(&t.ID, &t.Slug, &t.Subject, &t.HTMLBody, &active, &t.CreatedAt, &t.UpdatedAt)
+		t.IsActive = active == 1
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+func (db *DB) GetEmailTemplateBySlug(slug string) (*models.EmailTemplate, error) {
+	var t models.EmailTemplate
+	var active int
+	err := db.conn.QueryRow(`SELECT id,slug,subject,html_body,is_active,created_at,updated_at FROM email_templates WHERE slug=?`, slug).
+		Scan(&t.ID, &t.Slug, &t.Subject, &t.HTMLBody, &active, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	t.IsActive = active == 1
+	return &t, nil
+}
+
+func (db *DB) SaveEmailTemplate(t models.EmailTemplate) error {
+	active := 0
+	if t.IsActive {
+		active = 1
+	}
+	id := t.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	_, err := db.conn.Exec(`
+		INSERT INTO email_templates(id,slug,subject,html_body,is_active,created_at,updated_at)
+		VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+		ON CONFLICT(slug) DO UPDATE SET
+			subject=excluded.subject,
+			html_body=excluded.html_body,
+			is_active=excluded.is_active,
+			updated_at=CURRENT_TIMESTAMP`,
+		id, t.Slug, t.Subject, t.HTMLBody, active)
+	return err
+}
+
+// ─── Email Campaigns & Logs ──────────────────────────────────────────────────
+
+func (db *DB) CreateEmailCampaign(c models.EmailCampaign) (*models.EmailCampaign, error) {
+	c.ID = uuid.NewString()
+	c.CreatedAt = time.Now()
+	if c.Status == "" {
+		c.Status = "draft"
+	}
+	_, err := db.conn.Exec(`
+		INSERT INTO email_campaigns(id,title,subject,html_body,target_group,total_sent,status,scheduled_at,sent_at,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.Title, c.Subject, c.HTMLBody, c.TargetGroup, c.TotalSent, c.Status, c.ScheduledAt, c.SentAt, c.CreatedAt)
+	return &c, err
+}
+
+func (db *DB) ListEmailCampaigns() ([]models.EmailCampaign, error) {
+	rows, err := db.conn.Query(`SELECT id,title,subject,html_body,target_group,total_sent,status,scheduled_at,sent_at,created_at FROM email_campaigns ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.EmailCampaign
+	for rows.Next() {
+		var c models.EmailCampaign
+		rows.Scan(&c.ID, &c.Title, &c.Subject, &c.HTMLBody, &c.TargetGroup, &c.TotalSent, &c.Status, &c.ScheduledAt, &c.SentAt, &c.CreatedAt)
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (db *DB) LogEmailSent(shopDomain, email, emailType, subject, status, errMsg string) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO email_logs(id,shop_domain,email,type,subject,status,error,created_at)
+		VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+		uuid.NewString(), shopDomain, email, emailType, subject, status, errMsg)
+	return err
+}
+
+func (db *DB) ListEmailLogs(limit int) ([]models.EmailLog, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.conn.Query(`SELECT id,shop_domain,email,type,subject,status,COALESCE(error,''),created_at FROM email_logs ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.EmailLog
+	for rows.Next() {
+		var l models.EmailLog
+		rows.Scan(&l.ID, &l.ShopDomain, &l.Email, &l.Type, &l.Subject, &l.Status, &l.Error, &l.CreatedAt)
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+// ─── Merchant Email Tracking ─────────────────────────────────────────────────
+
+func (db *DB) UpsertMerchantEmail(shopDomain, email string) error {
+	if shopDomain == "" || email == "" {
+		return nil
+	}
+	_, err := db.conn.Exec(`
+		INSERT INTO merchant_emails(shop_domain,email,is_installed,installed_at,updated_at)
+		VALUES(?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+		ON CONFLICT(shop_domain) DO UPDATE SET
+			email=COALESCE(NULLIF(excluded.email,''),email),
+			is_installed=1,
+			uninstalled_at=NULL,
+			updated_at=CURRENT_TIMESTAMP`,
+		shopDomain, email)
+	return err
+}
+
+func (db *DB) MarkMerchantUninstalled(shopDomain string) error {
+	_, err := db.conn.Exec(`
+		UPDATE merchant_emails SET is_installed=0, uninstalled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE shop_domain=?`, shopDomain)
+	return err
+}
+
+func (db *DB) ListMerchantEmails(targetGroup string) ([]models.Contact, error) {
+	var query string
+	switch targetGroup {
+	case "active":
+		query = `SELECT shop_domain, email FROM merchant_emails WHERE is_installed=1`
+	case "uninstalled":
+		query = `SELECT shop_domain, email FROM merchant_emails WHERE is_installed=0`
+	default:
+		query = `SELECT shop_domain, email FROM merchant_emails`
+	}
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Contact
+	for rows.Next() {
+		var c models.Contact
+		rows.Scan(&c.ShopifyCustomerID, &c.Name) // repurpose ShopifyCustomerID as domain, Name as email
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// ─── Revenue Analytics ───────────────────────────────────────────────────────
+
+func (db *DB) GetRevenueStats() (models.RevenueStats, error) {
+	var stats models.RevenueStats
+	stats.PlanBreakdown = make(map[string]int)
+
+	rows, err := db.conn.Query(`SELECT COALESCE(plan_key,'free'), COUNT(*) FROM settings GROUP BY plan_key`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pk string
+			var count int
+			rows.Scan(&pk, &count)
+			stats.PlanBreakdown[pk] = count
+			if pk == "free" || pk == "" {
+				stats.FreeShops += count
+			} else {
+				stats.TotalPayingShops += count
+				_, price, _ := db.planInfo(pk)
+				stats.MRR += float64(count) * price
+			}
+		}
+	}
+	stats.ARR = stats.MRR * 12
+
+	// Fetch recent auto-upgrades
+	upRows, err := db.conn.Query(`SELECT shop_domain, from_plan, to_plan, charged, timestamp FROM auto_upgrade_logs ORDER BY timestamp DESC LIMIT 20`)
+	if err == nil {
+		defer upRows.Close()
+		for upRows.Next() {
+			var u models.AutoUpgradeEvent
+			upRows.Scan(&u.ShopDomain, &u.FromPlan, &u.ToPlan, &u.Charged, &u.Timestamp)
+			stats.RecentUpgrades = append(stats.RecentUpgrades, u)
+		}
+	}
+	if stats.RecentUpgrades == nil {
+		stats.RecentUpgrades = []models.AutoUpgradeEvent{}
+	}
+
+	return stats, nil
+}
+
+// ─── Merchant Detail ─────────────────────────────────────────────────────────
+
+func (db *DB) GetMerchantDetail(shop string) (*models.MerchantDetail, error) {
+	var d models.MerchantDetail
+	d.ShopDomain = shop
+
+	// Get settings & plan info
+	db.conn.QueryRow(`
+		SELECT COALESCE(plan_name,'Free'), COALESCE(plan_key,'free'), COALESCE(message_limit,150),
+		COALESCE(messages_sent_this_month,0), COALESCE(subscription_line_item_id,'')
+		FROM settings WHERE shop_domain=?`, shop).
+		Scan(&d.PlanName, &d.PlanKey, &d.MessageLimit, &d.MessagesSentThisMonth, &d.SubscriptionLineItemId)
+
+	// Get message counts
+	db.conn.QueryRow(`SELECT COUNT(*) FROM message_logs WHERE shop_domain=?`, shop).Scan(&d.TotalMessages)
+	db.conn.QueryRow(`SELECT COUNT(*) FROM message_logs WHERE shop_domain=? AND status='sent'`, shop).Scan(&d.MessagesSent)
+	db.conn.QueryRow(`SELECT COUNT(*) FROM contacts WHERE shop_domain=?`, shop).Scan(&d.ActiveContacts)
+	db.conn.QueryRow(`SELECT COUNT(*) FROM automations WHERE shop_domain=? AND is_active=1`, shop).Scan(&d.ActiveAutomations)
+
+	// Get merchant email info
+	var isInstalled int
+	db.conn.QueryRow(`SELECT email, is_installed, installed_at FROM merchant_emails WHERE shop_domain=?`, shop).
+		Scan(&d.MerchantEmail, &isInstalled, &d.InstalledAt)
+	d.IsUninstalled = isInstalled == 0
+
+	// Token health check
+	health, _ := db.OfflineTokenHealth()
+	for _, h := range health {
+		if h.Shop == shop && h.AtRisk {
+			d.TokenAtRisk = true
+			break
+		}
+	}
+
+	// Recent logs
+	logs, _ := db.ListMessageLogs(shop, 15)
+	d.RecentLogs = logs
+	if d.RecentLogs == nil {
+		d.RecentLogs = []models.MessageLog{}
+	}
+
+	return &d, nil
+}
