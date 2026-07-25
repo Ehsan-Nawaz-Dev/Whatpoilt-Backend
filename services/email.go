@@ -3,7 +3,6 @@ package services
 import (
 	"crypto/tls"
 	"fmt"
-	"net"
 	"net/smtp"
 	"strings"
 	"time"
