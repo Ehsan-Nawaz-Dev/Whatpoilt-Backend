@@ -411,12 +411,7 @@ func main() {
 
 			// Record merchant email and check if brand new install
 			if req.Email != "" {
-				isNewInstall := false
-				var count int
-				db.conn.QueryRow(`SELECT COUNT(*) FROM merchant_emails WHERE shop_domain=?`, req.ShopDomain).Scan(&count)
-				if count == 0 {
-					isNewInstall = true
-				}
+				isNewInstall := !db.MerchantEmailExists(req.ShopDomain)
 				db.UpsertMerchantEmail(req.ShopDomain, req.Email)
 
 				if isNewInstall {

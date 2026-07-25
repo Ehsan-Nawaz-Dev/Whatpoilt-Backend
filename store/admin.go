@@ -505,6 +505,14 @@ func (db *DB) ListEmailLogs(limit int) ([]models.EmailLog, error) {
 
 // ─── Merchant Email Tracking ─────────────────────────────────────────────────
 
+// MerchantEmailExists reports whether a merchant_emails row already exists for
+// the shop, used to detect a brand-new install.
+func (db *DB) MerchantEmailExists(shopDomain string) bool {
+	var count int
+	db.conn.QueryRow(`SELECT COUNT(*) FROM merchant_emails WHERE shop_domain=?`, shopDomain).Scan(&count)
+	return count > 0
+}
+
 func (db *DB) UpsertMerchantEmail(shopDomain, email string) error {
 	if shopDomain == "" || email == "" {
 		return nil
