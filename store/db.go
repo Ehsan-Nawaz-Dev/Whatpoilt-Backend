@@ -1210,13 +1210,13 @@ func (db *DB) autoUpgradeOnLimit(shop, planKey, lineItemId string) (bool, error)
 
 	_, curPrice, _ := db.planInfo(planKey)
 	nextName, nextPrice, nextLimit := db.planInfo(next)
-	diff := nextPrice - curPrice
-	if diff < 0 {
-		diff = 0
+	chargeAmount := nextPrice - curPrice
+	if chargeAmount < 0 {
+		chargeAmount = 0
 	}
-	if diff > 0 {
+	if chargeAmount > 0 {
 		idem := fmt.Sprintf("upgrade-%s-%s-%s", shop, next, time.Now().Format("2006-01"))
-		if err := db.createUsageCharge(shop, lineItemId, diff,
+		if err := db.createUsageCharge(shop, lineItemId, chargeAmount,
 			fmt.Sprintf("Auto-upgrade to %s plan", nextName), idem); err != nil {
 			slog.Error("auto-upgrade usage charge failed — pausing", "shop", shop, "next", next, "err", err)
 			return false, err
@@ -1224,7 +1224,7 @@ func (db *DB) autoUpgradeOnLimit(shop, planKey, lineItemId string) (bool, error)
 	}
 	db.conn.Exec(`UPDATE settings SET plan_key=?, plan_name=?, message_limit=? WHERE shop_domain=?`,
 		next, nextName, nextLimit, shop)
-	slog.Info("auto-upgraded shop to next tier", "shop", shop, "from", planKey, "to", next, "charged", diff)
+	slog.Info("auto-upgraded shop to next package plan", "shop", shop, "from", planKey, "to", next, "package", nextName, "limit", nextLimit, "charged", chargeAmount)
 	return true, nil
 }
 
