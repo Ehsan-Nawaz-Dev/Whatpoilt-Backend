@@ -1200,10 +1200,12 @@ func (db *DB) autoUpgradeOnLimit(shop, planKey, lineItemId string) (bool, error)
 		return false, nil
 	}
 	if lineItemId == "" {
-		// Free plan (or no usage line item): can't auto-charge — the merchant must
-		// approve a paid subscription first. The frontend prompts an upgrade.
-		slog.Info("over limit with no usage line item — upgrade needs subscription", "shop", shop, "plan", planKey, "next", next)
-		return false, nil
+		// Free plan (or no usage line item): auto-upgrade to next tier directly without interruption
+		nextName, _, nextLimit := db.planInfo(next)
+		db.conn.Exec(`UPDATE settings SET plan_key=?, plan_name=?, message_limit=? WHERE shop_domain=?`,
+			next, nextName, nextLimit, shop)
+		slog.Info("auto-upgraded free tier shop to next tier", "shop", shop, "from", planKey, "to", next)
+		return true, nil
 	}
 
 	_, curPrice, _ := db.planInfo(planKey)
